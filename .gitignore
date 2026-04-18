@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+
+# Workbuddy
+.workbuddy/
+
+# Output and plots (generated files)
+output/
+category_plots/
+reliability_plots/
+*.png
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Other
+*.log
