@@ -61,6 +61,10 @@ class ChartViewer:
         self._data_point_win = None
         # 联动信息缓存
         self._linked_info = {}
+        # 右键菜单信息（悬停时记录，用于右键菜单）
+        self._right_click_info = None
+        # 右键菜单引用
+        self._context_menu = None
         
         # 框选相关状态
         self._selected_fuse_ids = []  # 当前选中的FuseID列表
@@ -296,6 +300,7 @@ class ChartViewer:
         self._last_test_item = test_item
         self._bind_hover(ax, fc, test_item, shared_state)
         self._bind_click(ax, fc, test_item)   # 点击 tooltip
+        self._bind_context_menu(ax, fc)        # 右键菜单
         self._bind_wheel_zoom(ax, fc)          # 鼠标滚轮缩放
 
     def _show_grid(self, items_to_show, shared_state):
@@ -333,6 +338,7 @@ class ChartViewer:
             cells.append((cell, ax, fc, test_item))
             self._bind_hover(ax, fc, test_item, shared_state)
             self._bind_click(ax, fc, test_item)   # 点击 tooltip
+            self._bind_context_menu(ax, fc)        # 右键菜单
             self._bind_wheel_zoom(ax, fc)          # 鼠标滚轮缩放
 
             reset_ax_view(ax)
@@ -702,6 +708,81 @@ class ChartViewer:
             canvas.draw_idle()
 
         canvas.mpl_connect('scroll_event', on_wheel)
+
+    def _bind_context_menu(self, ax, canvas):
+        """绑定右键菜单"""
+        def on_button_press(event):
+            # 右键（button=3）
+            if event.button == 3:
+                # 检查是否有悬停数据点
+                if self._last_fuse_id and self._last_fuse_id != 'N/A':
+                    # 显示右键菜单
+                    self._show_context_menu(event)
+                else:
+                    # 无悬停数据点，关闭菜单
+                    self._close_context_menu()
+        
+        def on_motion(event):
+            # 鼠标移动时更新右键菜单信息
+            pass  # 信息已通过悬停更新
+        
+        def on_leave(event):
+            # 鼠标离开时关闭菜单
+            self._close_context_menu()
+        
+        canvas.mpl_connect('button_press_event', on_button_press)
+        canvas.mpl_connect('motion_notify_event', on_motion)
+        canvas.mpl_connect('figure_leave_event', on_leave)
+    
+    def _show_context_menu(self, event):
+        """显示右键菜单"""
+        # 关闭已有菜单
+        self._close_context_menu()
+        
+        if not self._win or not self._win.winfo_exists():
+            return
+        
+        # 创建右键菜单
+        menu = tk.Menu(self._win, tearoff=0, bg='#f8f9fa', fg='#374151',
+                       font=('Microsoft YaHei', 9))
+        
+        # 查看抓图
+        menu.add_command(label='📷 查看抓图', command=self._on_context_view_images)
+        # 查看数据详情
+        menu.add_command(label='📊 查看数据详情', command=self._on_context_view_details)
+        
+        # 显示菜单
+        try:
+            menu.tk_popup(event.guiEvent.x_root, event.guiEvent.y_root)
+        except Exception:
+            pass
+        
+        self._context_menu = menu
+        
+        # 菜单关闭时清理
+        menu.bind('<Unmap>', lambda e: self._close_context_menu())
+    
+    def _close_context_menu(self):
+        """关闭右键菜单"""
+        if self._context_menu:
+            try:
+                self._context_menu.destroy()
+            except Exception:
+                pass
+            self._context_menu = None
+    
+    def _on_context_view_images(self):
+        """右键菜单：查看抓图"""
+        self._close_context_menu()
+        if self._last_fuse_id and self._last_fuse_id != 'N/A':
+            cb = self._cb.get('open_image_viewer')
+            if cb:
+                cb(self._last_fuse_id, self._last_readpoint)
+    
+    def _on_context_view_details(self):
+        """右键菜单：查看数据详情"""
+        self._close_context_menu()
+        self._show_data_point_dialog()
 
     def _show_data_point_dialog(self):
         """点击「查看数据点」按钮：切换显示/隐藏实时详情面板（方案B：按Chart分标签页）"""

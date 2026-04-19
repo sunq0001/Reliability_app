@@ -10,7 +10,7 @@ import os
 import re
 import glob
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 
 @dataclass
@@ -133,6 +133,89 @@ def scan_image_timestamps(image_folder: str) -> List[str]:
             timestamps.append('_root_')  # 标记为直接在根目录
 
     return sorted(timestamps)
+
+
+def get_images_for_timestamp(image_folder: str, timestamp: str) -> List[Tuple[str, str]]:
+    """
+    获取指定时间戳下的所有图片
+    
+    返回: List[(场景名, 文件路径)]，如 [('Dark', '.../Dark.png'), ('Mid', '.../Mid.png')]
+    """
+    import re
+    images = []
+    
+    if not image_folder or not os.path.isdir(image_folder):
+        return images
+    
+    # 时间戳文件夹
+    if timestamp != '_root_':
+        ts_folder = os.path.join(image_folder, timestamp)
+        if not os.path.isdir(ts_folder):
+            return images
+        folder = ts_folder
+    else:
+        folder = image_folder
+    
+    # 扫描图片文件
+    for f in os.listdir(folder):
+        if not f.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+            continue
+        
+        # 解析场景名：格式如 Dark_0_20260204012242.png
+        # 场景名 = 文件名中时间戳之前的部分
+        match = re.match(r'([^_]+)_(\d+)_(\d+)\.(png|jpg|jpeg|bmp)', f, re.IGNORECASE)
+        if match:
+            scene_name = match.group(1)  # 如 Dark, Dark2, Mid1A1D, TestPattern
+        else:
+            # 备用：从文件名提取第一部分
+            scene_name = os.path.splitext(f)[0].split('_')[0]
+        
+        full_path = os.path.join(folder, f)
+        images.append((scene_name, full_path))
+    
+    return images
+
+
+def get_all_images_by_readpoint(readpoint_info: 'ReadPointInfo', timestamp: str) -> Dict[str, List[Tuple[str, str]]]:
+    """
+    获取指定读点在指定时间戳下的所有图片
+    
+    返回: {读点名: [(场景名, 路径), ...]}
+    """
+    import re
+    result = {}
+    
+    if not readpoint_info.image_folder or not os.path.isdir(readpoint_info.image_folder):
+        return result
+    
+    # 时间戳文件夹
+    if timestamp != '_root_':
+        ts_folder = os.path.join(readpoint_info.image_folder, timestamp)
+        if not os.path.isdir(ts_folder):
+            return result
+        folder = ts_folder
+    else:
+        folder = readpoint_info.image_folder
+    
+    for f in os.listdir(folder):
+        if not f.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+            continue
+        
+        # 解析场景名
+        match = re.match(r'([^_]+)_(\d+)_(\d+)\.(png|jpg|jpeg|bmp)', f, re.IGNORECASE)
+        if match:
+            scene_name = match.group(1)
+        else:
+            scene_name = os.path.splitext(f)[0].split('_')[0]
+        
+        full_path = os.path.join(folder, f)
+        
+        rp_name = readpoint_info.name
+        if rp_name not in result:
+            result[rp_name] = []
+        result[rp_name].append((scene_name, full_path))
+    
+    return result
 
 
 def scan_readpoint_folder(folder_path: str) -> ReadPointInfo:

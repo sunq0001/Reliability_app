@@ -674,10 +674,52 @@ class ReliabilityAnalysisApp:
 
     def _open_image_viewer(self, fuse_id, readpoint=None, timestamp=None):
         """由 ChartViewer 的「查看抓图」按钮触发：显示对应芯片的所有抓图"""
+        # 如果没有独立的抓图扫描结果，尝试从项目扫描结果获取
+        if self._image_scan_result is None and self._project_scan_result is not None:
+            from src.image_scanner import scan_image_root, find_images_for_fuse
+            # 从项目扫描结果构建抓图根目录
+            root_paths = set()
+            for rp in self._project_scan_result.readpoints:
+                if rp.image_folder:
+                    # image_folder 格式: .../读点文件夹/image/
+                    # 需要获取上级目录作为抓图根目录
+                    root_paths.add(os.path.dirname(os.path.dirname(rp.image_folder)))
+            
+            if root_paths:
+                # 合并扫描多个根目录的结果
+                combined_result = {
+                    'readpoints': {},
+                    'global_ts': {},
+                    'stats': {'total_images': 0, 'readpoints_found': []}
+                }
+                for root in root_paths:
+                    result = scan_image_root(root)
+                    # 合并到 combined_result
+                    for rp_name, ts_map in result.get('readpoints', {}).items():
+                        if rp_name not in combined_result['readpoints']:
+                            combined_result['readpoints'][rp_name] = {}
+                        for ts, paths in ts_map.items():
+                            if ts not in combined_result['readpoints'][rp_name]:
+                                combined_result['readpoints'][rp_name][ts] = []
+                            combined_result['readpoints'][rp_name][ts].extend(paths)
+                    combined_result['stats']['total_images'] += result.get('stats', {}).get('total_images', 0)
+                    combined_result['stats']['readpoints_found'].extend(result.get('stats', {}).get('readpoints_found', []))
+                    # 合并全局时间戳
+                    for ts, paths in result.get('global_ts', {}).items():
+                        if ts not in combined_result['global_ts']:
+                            combined_result['global_ts'][ts] = []
+                        combined_result['global_ts'][ts].extend(paths)
+                
+                # 使用合并的结果
+                self._image_scan_result = combined_result
+                self.log(f"[抓图] 从项目目录扫描到 {combined_result['stats']['total_images']} 张图片", 'info')
+        
         if self._image_scan_result is None:
-            messagebox.showwarning("提示",
-                "请先在左侧「抓图路径配置」中选择根目录并点击「扫描抓图」")
+            messagebox.showinfo("提示",
+                "请先在左侧「抓图路径配置」中选择根目录并点击「扫描抓图」\n"
+                "或者加载包含抓图目录的项目文件夹")
             return
+        
         # 优先用传入的 timestamp，否则走 FuseID → 时间戳 → 查图 的流程
         if timestamp:
             self._image_viewer.show_for_timestamp(timestamp, readpoint, fuse_id)
