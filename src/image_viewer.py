@@ -212,7 +212,6 @@ class ImageViewer:
         self._title_label = tk.Label(header, font=('Microsoft YaHei', 11, 'bold'),
                                      bg='#16213e', fg='#e0e0e0', anchor='w')
         self._title_label.pack(side='left', padx=12, pady=8, fill='x', expand=True)
-        self._update_title()
 
         self._count_label = tk.Label(header, font=('Microsoft YaHei', 9),
                                      bg='#16213e', fg='#888')
@@ -227,21 +226,23 @@ class ImageViewer:
         self._scrollbar = ttk.Scrollbar(self._scroll_frame, orient='vertical',
                                         command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=self._scrollbar.set)
-        
+
         self._scrollbar.pack(side='right', fill='y')
         self._canvas.pack(side='left', fill='both', expand=True)
 
         # 实际内容frame放在canvas内
         self._grid_frame = tk.Frame(self._canvas, bg='#1a1a2e')
         self._canvas_window = self._canvas.create_window((0, 0), window=self._grid_frame, anchor='nw')
-        
+
         # 绑定配置事件
         self._grid_frame.bind('<Configure>', self._on_frame_configure)
         self._canvas.bind('<Configure>', self._on_canvas_configure)
-        
+
         # 鼠标滚轮滚动
         self._canvas.bind('<MouseWheel>', lambda e: self._canvas.yview_scroll(int(-1*(e.delta/120)), 'units'))
 
+        # 先更新标题，再构建网格
+        self._update_title()
         self._rebuild_grid()
 
     def _on_frame_configure(self, event=None):
