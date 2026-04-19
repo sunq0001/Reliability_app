@@ -19,6 +19,22 @@ matplotlib.use('TkAgg')  # 必须在 import pyplot 之前设置
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+# UI 主题配置
+from src.ui_theme import (
+    configure_ttk_styles,
+    FONT_YAHEI, FONT_CONSOLA,
+    FONT_TEXT, FONT_TEXT_BOLD, FONT_TEXT_SMALL, FONT_TEXT_TITLE,
+    FONT_MONO,
+    COLOR_BG_DARK, COLOR_BG_LIGHT, COLOR_BG_CARD, COLOR_BG_HEADER,
+    COLOR_TEXT_DARK, COLOR_TEXT_MID, COLOR_TEXT_LIGHT, COLOR_TEXT_WHITE,
+    COLOR_PRIMARY, COLOR_PRIMARY_HOVER, COLOR_PRIMARY_LIGHT,
+    COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR, COLOR_INFO,
+    COLOR_BORDER,
+    PAD_SM, PAD_MD, PAD_LG,
+    tk_btn_config, tk_btn_primary_config, tk_btn_success_config,
+    ttk_label_config, tk_entry_config,
+    ICON_SUCCESS, ICON_WARNING, ICON_ERROR,
+)
 
 # ---- 抽取到 src/ 模块的组件 ----
 from src.chart_builder import (
@@ -32,6 +48,7 @@ from src.chart_viewer import ChartViewer
 from src.ui_components import TestItemSelector
 from src.image_viewer import ImageViewer
 from src.image_scanner import scan_image_root
+from src.project_scanner import scan_project, ProjectScanResult, ReadPointInfo
 from src.utils import format_ts_for_display, sanitize_filename
 from src.event_handlers import EventHandlers
 
@@ -44,16 +61,19 @@ class ReliabilityAnalysisApp:
         self.root.geometry("1200x860")
         self.root.minsize(900, 600)
         
-        # 设置样式
+        # 设置样式（使用 ui_theme）
         self.style = ttk.Style()
         self.style.theme_use('clam')
-        self._configure_styles()
+        configure_ttk_styles(self.root)
         
         # 配置 Matplotlib 中文字体（全局生效）
         configure_matplotlib_chinese()
         
         # 存储选择的路径
         self.read_point_folders = {}  # {时间点: 路径}
+        
+        # 项目扫描结果
+        self._project_scan_result: ProjectScanResult = None
         
         # 事件处理器
         self._handlers = EventHandlers(self)
@@ -85,79 +105,23 @@ class ReliabilityAnalysisApp:
 
         # 创建UI
         self.create_ui()
-    
-    def _configure_styles(self):
-        """配置全局样式"""
-        s = self.style
-        
-        # 主色调
-        BG       = '#f5f6fa'   # 窗口背景
-        PANEL_BG = '#ffffff'   # 面板背景
-        ACCENT   = '#3b82f6'   # 强调色（蓝）
-        ACCENT_H = '#2563eb'   # 悬停蓝
-        BTN_BG   = '#e8eaf0'   # 普通按钮背景
-        BTN_FG   = '#374151'   # 按钮文字
-        LABEL_FG = '#1f2937'   # 标签文字
-        FRAME_BD = '#d1d5db'   # 边框色
-        
-        self.root.configure(bg=BG)
-        
-        # 通用 Frame / Label
-        s.configure('TFrame',       background=BG)
-        s.configure('TLabel',       background=BG, foreground=LABEL_FG,
-                    font=('Microsoft YaHei', 9))
-        s.configure('TLabelframe',  background=BG, foreground=LABEL_FG,
-                    font=('Microsoft YaHei', 9, 'bold'),
-                    bordercolor=FRAME_BD, relief='groove')
-        s.configure('TLabelframe.Label', background=BG, foreground=ACCENT,
-                    font=('Microsoft YaHei', 9, 'bold'))
-        
-        # 普通按钮
-        s.configure('TButton',
-                    background=BTN_BG, foreground=BTN_FG,
-                    font=('Microsoft YaHei', 9),
-                    padding=(8, 4), relief='flat', borderwidth=1)
-        s.map('TButton',
-              background=[('active', '#d1d5db'), ('pressed', '#9ca3af')],
-              relief=[('pressed', 'sunken')])
-        
-        # 强调按钮（开始分析）
-        s.configure('Accent.TButton',
-                    background=ACCENT, foreground='white',
-                    font=('Microsoft YaHei', 9, 'bold'),
-                    padding=(10, 5), relief='flat')
-        s.map('Accent.TButton',
-              background=[('active', ACCENT_H), ('pressed', '#1d4ed8')],
-              foreground=[('active', 'white')])
-        
-        # Entry
-        s.configure('TEntry', padding=(4, 3), fieldbackground=PANEL_BG,
-                    foreground=LABEL_FG)
-        
-        # Checkbutton
-        s.configure('TCheckbutton', background=BG, foreground=LABEL_FG,
-                    font=('Microsoft YaHei', 9))
-        
-        # PanedWindow sash 颜色
-        self.root.option_add('*Sash.sashRelief', 'raised')
-        self.root.option_add('*Sash.width', '6')
         
     def create_ui(self):
         """创建所有UI组件"""
-        BG = '#f5f6fa'
+        BG = COLOR_BG_LIGHT
         
         # ========== 标题栏 ==========
-        title_bar = tk.Frame(self.root, bg='#1e40af', pady=12)
+        title_bar = tk.Frame(self.root, bg=COLOR_PRIMARY, pady=12)
         title_bar.pack(fill='x')
         
         tk.Label(title_bar,
                  text="可靠性测试数据分析工具",
-                 font=("Microsoft YaHei", 16, "bold"),
-                 bg='#1e40af', fg='white').pack()
+                 font=(FONT_YAHEI, 16, "bold"),
+                 bg=COLOR_PRIMARY, fg='white').pack()
         tk.Label(title_bar,
                  text="自动扫描测试项 · 整合多时间读点数据 · 生成分析图表和PPT报告",
-                 font=("Microsoft YaHei", 9),
-                 bg='#1e40af', fg='#bfdbfe').pack(pady=(2, 0))
+                 font=FONT_TEXT,
+                 bg=COLOR_PRIMARY, fg='#bfdbfe').pack(pady=(2, 0))
         
         # ========== 主体：左右可拖动分栏 ==========
         paned = tk.PanedWindow(self.root, orient='horizontal',
@@ -230,22 +194,99 @@ class ReliabilityAnalysisApp:
 
     def create_folder_selection(self, parent):
         """创建文件夹选择区域"""
-        
-        # --- 漂移检测标准（第一行，始终可见）---
+
+        # ========== 第一行：项目目录配置 ==========
+        project_frame = ttk.LabelFrame(parent, text="项目目录", padding=PAD_MD)
+        project_frame.pack(fill='x', pady=(0, PAD_MD))
+
+        # 根目录选择行
+        proj_row1 = ttk.Frame(project_frame)
+        proj_row1.pack(fill='x')
+
+        ttk.Label(proj_row1, text="目录:", width=5).pack(side='left')
+        self._project_path_var = tk.StringVar(value="未选择")
+        self._project_path_display_var = tk.StringVar(value="未选择")
+
+        def _update_proj_display(*_):
+            full = self._project_path_var.get()
+            if not full or full == "未选择":
+                self._project_path_display_var.set("未选择")
+            else:
+                self._project_path_display_var.set(
+                    ('...' + full[-20:]) if len(full) > 23 else full
+                )
+
+        self._project_path_var.trace_add('write', _update_proj_display)
+
+        proj_label = ttk.Label(proj_row1, textvariable=self._project_path_display_var,
+                              foreground=COLOR_TEXT_MID, width=18)
+        proj_label.pack(side='left', padx=(PAD_SM, PAD_MD))
+        make_path_tooltip(proj_label, self._project_path_var)
+
+        tk.Button(proj_row1, text="加载目录",
+                 command=self._select_and_load_project,
+                 **tk_btn_primary_config()).pack(side='left')
+
+        self._project_status_var = tk.StringVar(value="请选择项目根目录或读点目录")
+        status_label = ttk.Label(proj_row1, textvariable=self._project_status_var,
+                                font=FONT_TEXT_SMALL, foreground=COLOR_TEXT_MID)
+        status_label.pack(side='left', padx=(PAD_MD, 0))
+
+        # ========== 第二行：时间读点配置 ==========
+        read_point_frame = ttk.LabelFrame(parent, text="时间读点配置", padding=8)
+        read_point_frame.pack(fill='x', pady=(0, PAD_SM))
+
+        ttk.Label(read_point_frame, text="扫描后将自动识别读点，可手动调整:").pack(anchor='w', pady=(0, 4))
+
+        # 读点容器
+        self.read_point_container = ttk.Frame(read_point_frame)
+        self.read_point_container.pack(fill='x')
+
+        self.read_point_widgets = []
+        self.read_point_data = {}
+        self._project_scan_result = None  # 存储扫描结果
+
+        # 默认占位行（扫描后会被替换）
+        default_read_points = ["0H", "168H", "500H", "1000H"]
+        for name in default_read_points:
+            self._create_read_point_row(name)
+
+        # 底部按钮行
+        add_btn_frame = ttk.Frame(read_point_frame)
+        add_btn_frame.pack(fill='x', pady=(PAD_SM, 0))
+
+        self.new_read_point_entry = ttk.Entry(add_btn_frame, width=10)
+        self.new_read_point_entry.insert(0, "新增读点")
+        self.new_read_point_entry.pack(side='left')
+        self.new_read_point_entry.bind('<FocusIn>', self._handlers._on_entry_focus_in)
+        self.new_read_point_entry.bind('<FocusOut>', self._handlers._on_entry_focus_out)
+
+        ttk.Button(add_btn_frame, text="添加", width=6,
+                   command=self._add_read_point).pack(side='left', padx=(PAD_SM, 0))
+
+        self._analysis_btn = tk.Button(
+            add_btn_frame, text="开始分析", width=8,
+            command=self.start_analysis,
+            bg='#1e40af', fg='white', relief='flat',
+            cursor='hand1', font=('Microsoft YaHei', 8, 'bold'),
+            activebackground='#1d4ed8', activeforeground='white')
+        self._analysis_btn.pack(side='right')
+
+        # ========== 第三行：漂移检测标准 ==========
         drift_frame = ttk.LabelFrame(parent, text="漂移检测标准", padding=8)
-        drift_frame.pack(fill='x', pady=(0, 8))
-        
+        drift_frame.pack(fill='x', pady=(0, PAD_SM))
+
         # 三个规则并排一行
         rule_bar = ttk.Frame(drift_frame)
         rule_bar.pack(fill='x')
-        
+
         self.rule1_enabled = tk.BooleanVar(value=True)
         self.rule2_enabled = tk.BooleanVar(value=True)
         self.rule3_enabled = tk.BooleanVar(value=True)
         self.rule1_threshold = tk.StringVar(value="30")
         self.rule2_threshold = tk.StringVar(value="50")
         self.rule3_threshold = tk.StringVar(value="30")
-        
+
         # 规则1
         f1 = ttk.Frame(rule_bar)
         f1.pack(side='left', padx=(0, 12))
@@ -253,7 +294,7 @@ class ReliabilityAnalysisApp:
         ttk.Label(f1, text="偏离>").pack(side='left')
         ttk.Entry(f1, textvariable=self.rule1_threshold, width=4).pack(side='left', padx=2)
         ttk.Label(f1, text="%").pack(side='left')
-        
+
         # 规则2
         f2 = ttk.Frame(rule_bar)
         f2.pack(side='left', padx=(0, 12))
@@ -261,7 +302,7 @@ class ReliabilityAnalysisApp:
         ttk.Label(f2, text="漂移>").pack(side='left')
         ttk.Entry(f2, textvariable=self.rule2_threshold, width=4).pack(side='left', padx=2)
         ttk.Label(f2, text="%").pack(side='left')
-        
+
         # 规则3
         f3 = ttk.Frame(rule_bar)
         f3.pack(side='left', padx=(0, 12))
@@ -269,7 +310,7 @@ class ReliabilityAnalysisApp:
         ttk.Label(f3, text="增量>").pack(side='left')
         ttk.Entry(f3, textvariable=self.rule3_threshold, width=4).pack(side='left', padx=2)
         ttk.Label(f3, text="%").pack(side='left')
-        
+
         # 分析上限
         limit_row = ttk.Frame(drift_frame)
         limit_row.pack(fill='x', pady=(5, 0))
@@ -281,170 +322,69 @@ class ReliabilityAnalysisApp:
                    command=lambda: self._toggle_all_rules(True)).pack(side='right')
         ttk.Button(limit_row, text="全关", width=4,
                    command=lambda: self._toggle_all_rules(False)).pack(side='right', padx=(0, 4))
-        
-        # --- 测试项选择（第二行，始终可见）---
+
+        # ========== 第四行：测试项选择 ==========
         test_item_frame = ttk.LabelFrame(parent, text="测试项选择", padding=8)
-        test_item_frame.pack(fill='x', pady=(0, 8))
-        
+        test_item_frame.pack(fill='x', pady=(0, PAD_SM))
+
         trigger_frame = ttk.Frame(test_item_frame)
         trigger_frame.pack(fill='x')
-        
+
         self.test_item_count_var = tk.StringVar(value="点击选择测试项...")
         tk.Button(trigger_frame, textvariable=self.test_item_count_var,
-                  command=self._open_selector,
-                  bg='#eff6ff', fg='#1e40af',
-                  font=('Microsoft YaHei', 9), relief='groove',
-                  cursor='hand1', pady=3).pack(side='left', fill='x', expand=True)
-        
+                 command=self._open_selector,
+                 bg='#eff6ff', fg='#1e40af',
+                 font=('Microsoft YaHei', 9), relief='groove',
+                 cursor='hand1', pady=3).pack(side='left', fill='x', expand=True)
+
         tk.Button(trigger_frame, text="重新扫描", width=7,
                  command=self._scan_test_items,
                  bg='#f3f4f6', fg='#374151',
                  font=('Microsoft YaHei', 9),
                  relief='flat', cursor='hand1',
                  activebackground='#e5e7eb').pack(side='left', padx=(6, 0))
-        
+
         ttk.Label(test_item_frame, text="Ctrl+多选  Shift+连选  空格过滤",
-                 font=('Microsoft YaHei', 7), foreground='gray').pack(anchor='w')
-        
+                font=('Microsoft YaHei', 7), foreground='gray').pack(anchor='w')
+
         self._all_test_items = []
         self._filtered_test_items = []
         self._selected_test_items = set()
-
-        # --- 时间读点配置（第三行）---
-        read_point_frame = ttk.LabelFrame(parent, text="时间读点配置", padding=8)
-        read_point_frame.pack(fill='x', pady=(0, 8))
-        
-        ttk.Label(read_point_frame, text="选择数据文件:").pack(anchor='w', pady=(0, 4))
-        
-        self.read_point_widgets = []
-        self.read_point_data = {}
-        
-        default_read_points = ["0H", "168H", "500H", "1000H"]
-        for name in default_read_points:
-            self._create_read_point_row(read_point_frame, name)
-        
-        add_btn_frame = ttk.Frame(read_point_frame)
-        add_btn_frame.pack(fill='x', pady=(6, 0))
-        
-        self.new_read_point_entry = ttk.Entry(add_btn_frame, width=10)
-        self.new_read_point_entry.insert(0, "新增读点")
-        self.new_read_point_entry.pack(side='left')
-        self.new_read_point_entry.bind('<FocusIn>', self._handlers._on_entry_focus_in)
-        self.new_read_point_entry.bind('<FocusOut>', self._handlers._on_entry_focus_out)
-        
-        ttk.Button(add_btn_frame, text="添加", width=6,
-                   command=self._add_read_point).pack(side='left', padx=(6, 0))
-        
-        self._analysis_btn = tk.Button(
-            add_btn_frame, text="开始分析", width=8,
-            command=self.start_analysis,
-            bg='#1e40af', fg='white', relief='flat',
-            cursor='hand1', font=('Microsoft YaHei', 8, 'bold'),
-            activebackground='#1d4ed8', activeforeground='white')
-        self._analysis_btn.pack(side='right')
-        
-        # --- 抓图路径配置（第四行）---
-        image_search_frame = ttk.LabelFrame(parent, text="抓图路径配置", padding=8)
-        image_search_frame.pack(fill='x', pady=(0, 8))
-
-        # 第一行：根目录 + 扫描按钮
-        row1 = ttk.Frame(image_search_frame)
-        row1.pack(fill='x')
-
-        ttk.Label(row1, text="根目录:", width=5).pack(side='left')
-        self.image_root_path_var = tk.StringVar(value="未选择")
-        self.image_root_path_display_var = tk.StringVar(value="未选择")
-
-        def _update_img_root_display(*_):
-            full = self.image_root_path_var.get()
-            if not full or full == "未选择":
-                self.image_root_path_display_var.set("未选择")
-            else:
-                self.image_root_path_display_var.set(
-                    ('…' + full[-18:]) if len(full) > 20 else full
-                )
-        self.image_root_path_var.trace_add('write', _update_img_root_display)
-
-        self.image_root_path_label = ttk.Label(row1,
-                                               textvariable=self.image_root_path_display_var,
-                                               foreground='gray', width=12)
-        self.image_root_path_label.pack(side='left', padx=(4, 6))
-        make_path_tooltip(self.image_root_path_label, self.image_root_path_var)
-        ttk.Button(row1, text="选择根目录", width=8,
-                   command=self._select_image_root).pack(side='left', padx=(4, 0))
-
-        self._scan_img_btn = tk.Button(
-            row1, text="🔍 扫描抓图", width=10,
-            command=self._do_image_scan,
-            bg='#059669', fg='white', relief='flat',
-            cursor='hand1', font=('Microsoft YaHei', 8, 'bold'),
-            activebackground='#047857', activeforeground='white', state='disabled'
-        )
-        self._scan_img_btn.pack(side='left', padx=(6, 0))
-
-        # 第二行：扫描状态
-        row2 = ttk.Frame(image_search_frame)
-        row2.pack(fill='x', pady=(5, 0))
-        self._img_scan_status_var = tk.StringVar(value="请先选择抓图根目录")
-        ttk.Label(row2, textvariable=self._img_scan_status_var,
-                  font=('Microsoft YaHei', 8), foreground='#6b7280').pack(side='left')
-
-        # 第三行：手动搜索 FuseID/时间戳
-        search_frame = ttk.Frame(image_search_frame)
-        search_frame.pack(fill='x', pady=(6, 0))
-
-        ttk.Label(search_frame, text="搜索:").pack(side='left')
-        self.image_search_entry = ttk.Entry(search_frame, width=16)
-        self.image_search_entry.insert(0, "FuseID或时间戳")
-        self.image_search_entry.pack(side='left', padx=(4, 4))
-        self.image_search_entry.bind('<FocusIn>', self._handlers._on_search_focus_in)
-        self.image_search_entry.bind('<FocusOut>', self._handlers._on_search_focus_out)
-
-        self._search_img_btn = tk.Button(
-            search_frame, text="📷 出图", width=6,
-            command=self._handlers._on_search_image_output,
-            bg='#059669', fg='white', relief='flat',
-            cursor='hand1', font=('Microsoft YaHei', 8, 'bold'),
-            activebackground='#047857', activeforeground='white'
-        )
-        self._search_img_btn.pack(side='left')
-
-        self.image_search_result_var = tk.StringVar(value="")
-        ttk.Label(search_frame, textvariable=self.image_search_result_var,
-                  foreground='blue').pack(side='left', padx=(8, 0))
-
-        self.image_results_listbox = tk.Listbox(image_search_frame, height=2,
-                                               font=('Consolas', 8),
-                                               bg='#f9fafb', fg='#374151',
-                                               selectbackground='#dbeafe',
-                                               relief='groove', bd=1)
-        self.image_results_listbox.pack(fill='x', pady=(4, 0))
-
-        ttk.Button(image_search_frame, text="复制路径", width=8,
-                   command=self.copy_image_path).pack(pady=(4, 0))
-        
-        # ========== 右侧：结果显示 ==========
     def create_result_panel(self, parent):
         """创建日志面板"""
+        # 顶部：读点信息表格
+        self._info_tree = ttk.Treeview(parent, columns=('读点', '文件夹', '数据文件', '抓图目录'),
+                                       show='headings', height=5)
+        self._info_tree.heading('读点', text='读点')
+        self._info_tree.heading('文件夹', text='文件夹')
+        self._info_tree.heading('数据文件', text='数据文件')
+        self._info_tree.heading('抓图目录', text='抓图目录')
+        self._info_tree.column('读点', width=70, anchor='center')
+        self._info_tree.column('文件夹', width=100, anchor='w')
+        self._info_tree.column('数据文件', width=200, anchor='w')
+        self._info_tree.column('抓图目录', width=200, anchor='w')
+        self._info_tree.pack(fill='x', padx=8, pady=(8, 4))
+
+        # 底部：日志文本
         scroll_y = ttk.Scrollbar(parent, orient='vertical')
         self.result_text = tk.Text(parent,
                                     yscrollcommand=scroll_y.set,
-                                    font=("Consolas", 9),
-                                    bg='#ffffff', fg='#1f2937',
-                                    insertbackground='#3b82f6',
-                                    selectbackground='#bfdbfe',
+                                    font=FONT_MONO,
+                                    bg=COLOR_BG_CARD, fg=COLOR_TEXT_DARK,
+                                    insertbackground=COLOR_INFO,
+                                    selectbackground=COLOR_PRIMARY_LIGHT,
                                     relief='flat', bd=0,
                                     padx=8, pady=8,
                                     wrap='word')
         scroll_y.config(command=self.result_text.yview)
         scroll_y.pack(side='right', fill='y')
         self.result_text.pack(side='left', fill='both', expand=True)
-        
-        self.result_text.tag_config('title', font=('Consolas', 10, 'bold'), foreground='#1e40af')
-        self.result_text.tag_config('info', foreground='#3b82f6')
-        self.result_text.tag_config('success', foreground='#059669')
-        self.result_text.tag_config('warning', foreground='#d97706')
-        self.result_text.tag_config('error', foreground='#dc2626')
+
+        self.result_text.tag_config('title', font=FONT_MONO, foreground=COLOR_PRIMARY)
+        self.result_text.tag_config('info', foreground=COLOR_INFO)
+        self.result_text.tag_config('success', foreground=COLOR_SUCCESS)
+        self.result_text.tag_config('warning', foreground=COLOR_WARNING)
+        self.result_text.tag_config('error', foreground=COLOR_ERROR)
     
     def create_chart_viewer(self, parent):
         """创建图表查看器占位（实际内容委托给 ChartViewer）"""
@@ -452,19 +392,19 @@ class ReliabilityAnalysisApp:
         self._chart_cache = ThreadSafeChartCache(max_size=30)  # 后台预生成缓存
 
         # 在 tab 里放一个引导按钮，点此打开弹窗
-        guide = tk.Frame(parent, bg='#f9fafb')
+        guide = tk.Frame(parent, bg=COLOR_BG_LIGHT)
         guide.pack(fill='both', expand=True)
         tk.Label(
-            guide, text='图表查看器', font=('Microsoft YaHei', 11, 'bold'),
-            bg='#f9fafb', fg='#6b7280'
+            guide, text='图表查看器', font=FONT_TEXT_TITLE,
+            bg=COLOR_BG_LIGHT, fg=COLOR_TEXT_MID
         ).pack(pady=(40, 8))
         tk.Label(
             guide, text='先生成分析图表后，点击下方按钮打开弹窗查看',
-            bg='#f9fafb', fg='#9ca3af', font=('Microsoft YaHei', 9)
+            bg=COLOR_BG_LIGHT, fg=COLOR_TEXT_LIGHT, font=FONT_TEXT
         ).pack()
         self._open_chart_btn = tk.Button(
-            guide, text='打开图表查看器', font=('Microsoft YaHei', 10, 'bold'),
-            bg='#3b82f6', fg='white', relief='flat', cursor='hand1',
+            guide, text='打开图表查看器', font=FONT_TEXT_BOLD,
+            bg=COLOR_INFO, fg='white', relief='flat', cursor='hand1',
             padx=20, pady=8, command=self._chart_viewer.open
         )
         self._open_chart_btn.pack(pady=16)
@@ -474,16 +414,16 @@ class ReliabilityAnalysisApp:
 
     def create_action_buttons(self):
         """创建底部操作按钮"""
-        btn_frame = tk.Frame(self.root, bg='#1e40af', pady=8)
+        btn_frame = tk.Frame(self.root, bg=COLOR_PRIMARY, pady=8)
         btn_frame.pack(fill='x', side='bottom')
         
-        # 左侧操作按钮
+        # 按钮样式
         btn_style = {
-            'bg': '#ffffff', 'fg': '#1e40af',
-            'font': ('Microsoft YaHei', 9, 'bold'),
+            'bg': COLOR_BG_CARD, 'fg': COLOR_PRIMARY,
+            'font': FONT_TEXT_BOLD,
             'relief': 'flat', 'cursor': 'hand1',
             'padx': 14, 'pady': 5,
-            'activebackground': '#dbeafe', 'activeforeground': '#1e40af',
+            'activebackground': COLOR_PRIMARY_LIGHT, 'activeforeground': COLOR_PRIMARY,
             'bd': 0
         }
         tk.Button(btn_frame, text='生成图表',   command=self.generate_charts,  **btn_style).pack(side='left', padx=6)
@@ -492,10 +432,10 @@ class ReliabilityAnalysisApp:
         
         # 右侧退出按钮
         exit_style = dict(btn_style)
-        exit_style['bg'] = '#374151'
-        exit_style['fg'] = '#f9fafb'
-        exit_style['activebackground'] = '#6b7280'
-        exit_style['activeforeground'] = '#f9fafb'
+        exit_style['bg'] = COLOR_TEXT_DARK
+        exit_style['fg'] = COLOR_TEXT_WHITE
+        exit_style['activebackground'] = COLOR_TEXT_MID
+        exit_style['activeforeground'] = COLOR_TEXT_WHITE
         tk.Button(btn_frame, text='退出', command=self.root.quit, **exit_style).pack(side='right', padx=(6, 16))
         
     # ========== 事件处理方法 ==========
@@ -505,52 +445,91 @@ class ReliabilityAnalysisApp:
         self.result_text.insert('end', message + '\n', tag)
         self.result_text.see('end')
         self.root.update_idletasks()
-        
-    def _create_read_point_row(self, parent, name, saved_path=None):
+
+    def _clear_read_point_rows(self):
+        """清空所有读点行"""
+        for name in list(self.read_point_widgets):
+            if name in self.read_point_data:
+                frame = self.read_point_data[name].get('frame')
+                if frame:
+                    frame.destroy()
+                del self.read_point_data[name]
+        self.read_point_widgets.clear()
+
+    def _create_read_point_row(self, name, folder_name=None, data_file=None, image_folder=None):
         """创建单个时间读点的行"""
-        row_frame = ttk.Frame(parent)
+        row_frame = ttk.Frame(self.read_point_container)
         row_frame.pack(fill='x', pady=3)
-        
-        # 时间点标签（可编辑）
-        name_var = tk.StringVar(value=name)
+
+        # 时间点名称（可编辑）
+        display_name = folder_name if folder_name else name
+        name_var = tk.StringVar(value=display_name)
         name_entry = ttk.Entry(row_frame, textvariable=name_var, width=10, font=('Microsoft YaHei', 9))
         name_entry.pack(side='left')
-        
-        # 路径显示标签：存储完整路径，显示截断后的短路径
-        path_var = tk.StringVar(value="未选择" if not saved_path else saved_path)
-        # 显示用变量（截断）
-        path_display_var = tk.StringVar()
 
-        def update_path_display(*_):
-            full = path_var.get()
+        # 存储内部名称（用于数据关联）
+        inner_name = name
+        name_var._inner_name = inner_name
+
+        # 数据文件路径
+        if data_file:
+            data_path_var = tk.StringVar(value=data_file)
+        else:
+            data_path_var = tk.StringVar(value="未选择")
+
+        # 抓图目录路径
+        if image_folder:
+            img_path_var = tk.StringVar(value=image_folder)
+        else:
+            img_path_var = tk.StringVar(value="未选择")
+
+        # 数据文件显示
+        data_display_var = tk.StringVar()
+        def update_data_display(*_):
+            full = data_path_var.get()
             if not full or full == "未选择":
-                path_display_var.set("未选择")
+                data_display_var.set("未选择")
             else:
-                # 最多显示30字符，超出则显示 …+ 末尾
-                if len(full) > 30:
-                    path_display_var.set('…' + full[-28:])
-                else:
-                    path_display_var.set(full)
+                data_display_var.set('…' + full[-25:] if len(full) > 28 else full)
 
-        path_var.trace_add('write', update_path_display)
-        update_path_display()
+        data_path_var.trace_add('write', update_data_display)
+        update_data_display()
 
-        path_label = ttk.Label(row_frame, textvariable=path_display_var,
-                               foreground='gray' if not saved_path else 'black',
-                               width=25)
-        path_label.pack(side='left', padx=(5, 5))
-        # 绑定 hover tooltip 显示完整路径
-        make_path_tooltip(path_label, path_var)
-        
-        # 文件夹选择按钮
-        def select_path():
-            self._select_read_point_path(name_var, path_var)
-            path_label.config(foreground='black')
-        
-        btn = ttk.Button(row_frame, text="选择文件", command=select_path, width=10)
-        btn.pack(side='left')
-        
-        # 删除按钮（如果超过3个默认读点才显示删除）
+        data_label = ttk.Label(row_frame, textvariable=data_display_var,
+                              foreground='black' if data_file else 'gray', width=22)
+        data_label.pack(side='left', padx=(5, 2))
+        make_path_tooltip(data_label, data_path_var)
+
+        def select_data():
+            self._select_data_file(data_path_var)
+            data_label.config(foreground='black')
+
+        ttk.Button(row_frame, text="数据", command=select_data, width=5).pack(side='left')
+
+        # 抓图目录显示
+        img_display_var = tk.StringVar()
+        def update_img_display(*_):
+            full = img_path_var.get()
+            if not full or full == "未选择":
+                img_display_var.set("未选择")
+            else:
+                img_display_var.set('…' + full[-25:] if len(full) > 28 else full)
+
+        img_path_var.trace_add('write', update_img_display)
+        update_img_display()
+
+        img_label = ttk.Label(row_frame, textvariable=img_display_var,
+                              foreground='black' if image_folder else 'gray', width=22)
+        img_label.pack(side='left', padx=(5, 2))
+        make_path_tooltip(img_label, img_path_var)
+
+        def select_img():
+            self._select_image_path(img_path_var)
+            img_label.config(foreground='black')
+
+        ttk.Button(row_frame, text="抓图", command=select_img, width=5).pack(side='left')
+
+        # 删除按钮
         if len(self.read_point_widgets) >= 3:
             def delete_row():
                 row_frame.destroy()
@@ -563,16 +542,34 @@ class ReliabilityAnalysisApp:
                       bg='#f87171', fg='white', relief='flat',
                       font=('Arial', 10, 'bold'), cursor='hand1',
                       activebackground='#ef4444').pack(side='left', padx=(5, 0))
-        
+
         # 保存控件引用
         self.read_point_widgets.append(name)
         self.read_point_data[name] = {
             'name_var': name_var,
-            'path_var': path_var,
+            'data_path_var': data_path_var,
+            'img_path_var': img_path_var,
             'frame': row_frame
         }
-        
+
         return row_frame
+
+    def _select_data_file(self, path_var):
+        """选择数据文件"""
+        file_path = filedialog.askopenfilename(
+            title="选择数据文件",
+            filetypes=[("Excel/CSV", "*.xlsx *.xls *.csv"), ("所有文件", "*.*")]
+        )
+        if file_path:
+            path_var.set(file_path)
+            self.log(f"[已选择] 数据文件: {os.path.basename(file_path)}", 'success')
+
+    def _select_image_path(self, path_var):
+        """选择抓图目录"""
+        folder_path = filedialog.askdirectory(title="选择抓图目录")
+        if folder_path:
+            path_var.set(folder_path)
+            self.log(f"[已选择] 抓图目录: {os.path.basename(folder_path)}", 'success')
     
     def _select_read_point_path(self, name_var, path_var):
         """选择文件或文件夹"""
@@ -638,7 +635,7 @@ class ReliabilityAnalysisApp:
                 messagebox.showwarning("提示", f"读点 {new_name} 已存在")
                 return
         
-        self._create_read_point_row(read_point_frame, new_name)
+        self._create_read_point_row(new_name)
         self.new_read_point_entry.delete(0, 'end')
         self.new_read_point_entry.insert(0, "新增读点")
         self.log(f"[已添加] 新读点: {new_name}", 'success')
@@ -701,12 +698,93 @@ class ReliabilityAnalysisApp:
             messagebox.showinfo("提示", f"已复制:\n{path}")
         else:
             messagebox.showwarning("提示", "请先选择要复制的图片")
+
+    # ========== 项目目录扫描方法 ==========
+
+    def _select_project_root(self):
+        """选择项目根目录或读点目录"""
+        folder = filedialog.askdirectory(title="选择项目根目录或读点目录（如 HTOL/ 或 168H/）")
+        if not folder:
+            return
+
+        self._project_path_var.set(folder)
+        self._project_status_var.set(f"已选择: {os.path.basename(folder)}")
+
+        # 自动执行扫描
+        self._do_project_scan()
+
+    def _do_project_scan(self):
+        """扫描项目目录，识别读点"""
+        import threading
+
+        root = self._project_path_var.get()
+        if not root or root == "未选择":
+            messagebox.showwarning("提示", "请先选择项目目录")
+            return
+
+        self._project_status_var.set("正在扫描...")
+        self.root.update_idletasks()
+
+        def worker():
+            result = scan_project(root, log_callback=lambda msg: self.log(msg, 'info'))
+            self.root.after(0, lambda: self._on_project_scan_done(result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _select_and_load_project(self):
+        """选择目录并自动加载"""
+        folder = filedialog.askdirectory(title="选择项目根目录或读点目录")
+        if not folder:
+            return
+
+        self._project_path_var.set(folder)
+        self._do_project_scan()
+
+    def _on_project_scan_done(self, result: ProjectScanResult):
+        """扫描完成回调：自动填充时间读点配置"""
+        self._project_scan_result = result
+
+        if not result.readpoints:
+            self._project_status_var.set("未识别到任何读点目录，请检查目录结构")
+            self.log("[警告] 未识别到读点目录", 'warning')
+            return
+
+        # 更新状态
+        total = len(result.readpoints)
+        complete = sum(1 for rp in result.readpoints if rp.is_complete)
+        self._project_status_var.set(f"识别到 {total} 个读点，{complete} 个完整")
+
+        # 清空当前读点配置
+        self._clear_read_point_rows()
+
+        # 清空右侧表格
+        for item in self._info_tree.get_children():
+            self._info_tree.delete(item)
+
+        # 根据扫描结果填充
+        for rp in result.readpoints:
+            # 填充时间读点配置区域
+            self._create_read_point_row(rp.name, rp.folder_name, rp.data_file, rp.image_folder)
+
+            # 填充右侧信息表格
+            data_basename = os.path.basename(rp.data_file) if rp.data_file else '-'
+            image_name = os.path.basename(rp.image_folder) if rp.image_folder else '-'
+            self._info_tree.insert('', 'end', values=(
+                rp.name,
+                rp.folder_name,
+                data_basename,
+                image_name
+            ))
+
+        # 记录到日志
+        mode_desc = "根目录扫描" if result.mode == 'auto' else "直接读点"
+        self.log(f"[扫描完成] {mode_desc}，识别到 {total} 个读点", 'success')
     
     def get_all_read_points(self):
-        """获取所有读点及其路径"""
+        """获取所有读点及其数据文件路径"""
         result = {}
         for name, data in self.read_point_data.items():
-            path = data['path_var'].get()
+            path = data['data_path_var'].get()
             name_value = data['name_var'].get()
             if path and path != "未选择":
                 result[name_value] = path

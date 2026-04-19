@@ -200,7 +200,7 @@ class ChartInteractor:
         self._pending_redraw = False  # 是否有待处理的绘制
         
         # 配置参数
-        self.hover_tolerance = 0.15  # 归一化距离阈值（15%范围）
+        self.hover_tolerance_px = 12  # 像素距离阈值（约等于高亮红点半径 markersize=8 的视觉大小）
         self.highlight_style = {
             'marker': 'o',
             'color': '#ff0000',  # 亮红色
@@ -240,7 +240,7 @@ class ChartInteractor:
     
     def find_nearest_point(self, mouse_x, mouse_y):
         """
-        查找距离鼠标最近的数据点（使用 KDTree 优化）
+        查找距离鼠标最近的数据点（基于像素距离）
         
         返回: DataPoint 或 None
         """
@@ -250,28 +250,29 @@ class ChartInteractor:
         if not self.data_points:
             return None
         
-        # 计算坐标范围用于归一化
-        x_range = max(self.ax.get_xlim()[1] - self.ax.get_xlim()[0], 1e-9)
-        y_range = max(self.ax.get_ylim()[1] - self.ax.get_ylim()[0], 1e-9)
+        try:
+            # 获取鼠标在画布上的像素坐标（使用ax.transData，不是canvas.transData）
+            mouse_px = self.ax.transData.transform((mouse_x, mouse_y))
+            mouse_px_x, mouse_px_y = mouse_px
+            
+            # 计算所有数据点到鼠标的像素距离
+            min_dist = float('inf')
+            nearest_idx = None
+            
+            for i, point in enumerate(self.data_points):
+                pt_px = self.ax.transData.transform((point.x, point.y))
+                pt_px_x, pt_px_y = pt_px
+                dist = np.sqrt((pt_px_x - mouse_px_x)**2 + (pt_px_y - mouse_px_y)**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_idx = i
+            
+            # 检查是否在像素容差范围内
+            if nearest_idx is not None and min_dist < self.hover_tolerance_px:
+                return self.data_points[nearest_idx]
+        except Exception as e:
+            pass
         
-        # 归一化鼠标坐标
-        norm_mouse_x = mouse_x / x_range
-        norm_mouse_y = mouse_y / y_range
-        
-        # 预计算归一化坐标（已在 __init__ 中计算）
-        norm_coords_x = self._coords_x / x_range
-        norm_coords_y = self._coords_y / y_range
-        
-        # 计算所有归一化距离
-        dists = np.sqrt((norm_coords_x - norm_mouse_x)**2 + (norm_coords_y - norm_mouse_y)**2)
-        
-        # 找到最小距离
-        min_idx = np.argmin(dists)
-        min_dist = dists[min_idx]
-        
-        # 检查是否在容差范围内
-        if min_dist < self.hover_tolerance:
-            return self.data_points[min_idx]
         return None
     
     def draw_highlight(self, point):
