@@ -266,7 +266,16 @@ class ImageViewer:
         self._count_label.config(text=f"共 {total_images} 张 / {len(self._images_by_readpoint)} 个读点")
 
     def _rebuild_grid(self):
-        """按读点分行显示图片"""
+        """
+        按场景名行 x 读点列 显示图片矩阵
+
+        布局:
+        |           | 168H        | 500H        | 1000H       |
+        |-----------|-------------|-------------|-------------|
+        | Dark      | 时间戳/图片 | 时间戳/图片 | (无)        |
+        | Dark2     | 时间戳/图片 | 时间戳/图片 | 时间戳/图片 |
+        | Mid1A1D   | 时间戳/图片 | (无)        | 时间戳/图片 |
+        """
         if not self._grid_frame:
             return
 
@@ -279,47 +288,95 @@ class ImageViewer:
                     fg='#666', font=('Microsoft YaHei', 14)).pack(pady=40)
             return
 
-        # 每行一个读点
+        # 收集所有读点和场景名
+        readpoints = sorted(self._images_by_readpoint.keys())
+        scene_matrix = {}  # {场景名: {读点心: (场景名, 路径)}}
+
         for rp_name, images in self._images_by_readpoint.items():
-            # 读点标签行
-            rp_row = tk.Frame(self._grid_frame, bg='#1a1a2e')
-            rp_row.pack(fill='x', pady=(8, 4))
-            
-            tk.Label(rp_row, text=rp_name, font=('Microsoft YaHei', 10, 'bold'),
-                    bg='#2d4a6e', fg='#ffffff', padx=12, pady=4,
-                    relief='flat').pack(side='left', anchor='w')
-            
-            # 该读点的图片
-            img_row = tk.Frame(self._grid_frame, bg='#1a1a2e')
-            img_row.pack(fill='x', pady=(0, 8))
-            
-            # 显示该读点下所有图片（横向排列）
             for scene_name, path in images:
-                self._add_thumbnail(img_row, scene_name, path)
+                if scene_name not in scene_matrix:
+                    scene_matrix[scene_name] = {}
+                scene_matrix[scene_name][rp_name] = (scene_name, path)
+
+        scenes = sorted(scene_matrix.keys())
+
+        if not scenes:
+            tk.Label(self._grid_frame, text="无有效图片", bg='#1a1a2e',
+                    fg='#666', font=('Microsoft YaHei', 14)).pack(pady=40)
+            return
+
+        # 创建表格布局
+        cell_width = 200
+        cell_height = 180
+
+        # 第0行：列标题（读点名）
+        header_row = tk.Frame(self._grid_frame, bg='#1a1a2e')
+        header_row.pack(fill='x', pady=(0, 2))
+
+        # 空单元格（左上角）
+        tk.Frame(header_row, width=100, height=36, bg='#16213e').pack(side='left', padx=(0, 2))
+
+        # 读点列标题
+        for rp_name in readpoints:
+            cell = tk.Frame(header_row, width=cell_width, height=36, bg='#2d4a6e')
+            cell.pack(side='left', padx=2)
+            cell.pack_propagate(False)
+            tk.Label(cell, text=rp_name, font=('Microsoft YaHei', 10, 'bold'),
+                    bg='#2d4a6e', fg='#ffffff', anchor='center').pack(fill='both', expand=True)
+
+        # 每一行：一个场景名 + 该场景在各读点的图片
+        for scene_name in scenes:
+            # 场景名标签行
+            scene_row = tk.Frame(self._grid_frame, bg='#1a1a2e')
+            scene_row.pack(fill='x', pady=(0, 2))
+
+            # 场景名（左列标题）
+            scene_cell = tk.Frame(scene_row, width=100, height=cell_height, bg='#252540')
+            scene_cell.pack(side='left', padx=(0, 2))
+            scene_cell.pack_propagate(False)
+
+            type_name = self.TYPE_NAMES.get(scene_name, scene_name)
+            tk.Label(scene_cell, text=type_name, font=('Microsoft YaHei', 9, 'bold'),
+                    bg='#252540', fg='#7eb8da', anchor='center', wraplength=90,
+                    justify='center').pack(fill='both', expand=True)
+
+            # 该场景在各读点的图片
+            for rp_name in readpoints:
+                cell_data = scene_matrix.get(scene_name, {}).get(rp_name)
+                cell = tk.Frame(scene_row, width=cell_width, height=cell_height, bg='#1a1a2e')
+                cell.pack(side='left', padx=2)
+                cell.pack_propagate(False)
+
+                if cell_data:
+                    _, path = cell_data
+                    self._add_thumbnail_in_cell(cell, scene_name, path)
+                else:
+                    # 无图片
+                    tk.Label(cell, text="无数据", bg='#1a1a2e', fg='#555',
+                            font=('Microsoft YaHei', 8)).pack(fill='both', expand=True)
 
         self._on_frame_configure()
 
-    def _add_thumbnail(self, parent, scene_name, path):
-        """添加单个缩略图"""
+    def _add_thumbnail_in_cell(self, parent, scene_name, path):
+        """在表格单元格中添加缩略图（带时间戳）"""
+        # 提取时间戳用于显示
+        ts = self._extract_timestamp_from_path(path)
+
         cell = tk.Frame(parent, bg='#252540')
-        cell.pack(side='left', padx=4, pady=4)
+        cell.pack(fill='both', expand=True, padx=2, pady=2)
 
-        type_name = self.TYPE_NAMES.get(scene_name, scene_name)
-
-        # 类型标题栏
-        title_bar = tk.Frame(cell, bg='#2a2a45', height=24)
-        title_bar.pack(fill='x', side='top')
-        title_bar.pack_propagate(False)
-        tk.Label(title_bar, text=type_name, font=('Microsoft YaHei', 7, 'bold'),
-                bg='#2a2a45', fg='#7eb8da').pack(side='left', padx=4, pady=2)
+        # 时间戳标签
+        if ts:
+            ts_display = self._format_ts(ts) if len(ts) >= 14 else ts
+            tk.Label(cell, text=ts_display, font=('Microsoft YaHei', 7),
+                    bg='#2a2a45', fg='#888', anchor='w').pack(fill='x', padx=2, pady=(2, 0))
 
         # 图片区域
         img_area = tk.Frame(cell, bg='#1a1a2e')
         img_area.pack(fill='both', expand=True)
 
         try:
-            # 使用 matplotlib 显示缩略图
-            fig = Figure(figsize=(2.5, 2), dpi=60)
+            fig = Figure(figsize=(1.8, 1.5), dpi=60)
             fig.patch.set_facecolor('#1a1a2e')
             ax = fig.add_axes([0, 0, 1, 1])
             ax.axis('off')
@@ -327,12 +384,10 @@ class ImageViewer:
             img = Image.open(path)
             orig_mode = img.mode
 
-            # 16位图像处理
             if orig_mode in ('I;16', 'I;16L', 'I;16B'):
                 import numpy as np
                 arr = np.array(img)
-                vmin, vmax = 0, 65535
-                ax.imshow(img, cmap='gray', vmin=vmin, vmax=vmax)
+                ax.imshow(img, cmap='gray', vmin=0, vmax=65535)
             else:
                 ax.imshow(img, cmap='gray')
 
@@ -341,13 +396,19 @@ class ImageViewer:
             canvas.get_tk_widget().pack(fill='both', expand=True)
             self._canvas_list.append(canvas)
 
-            # 绑定点击放大
             canvas.mpl_connect('button_press_event',
                 lambda event, p=path: self._on_click(event, p))
 
         except Exception as ex:
-            tk.Label(img_area, text=f"加载失败\n{str(ex)[:20]}", bg='#1a1a2e',
+            tk.Label(img_area, text=f"加载失败", bg='#1a1a2e',
                     fg='#e74c3c', font=('Microsoft YaHei', 7)).pack(pady=10)
+
+    def _extract_timestamp_from_path(self, path):
+        """从文件路径提取时间戳"""
+        import re
+        # 匹配 14 位数字时间戳
+        match = re.search(r'(\d{14})', path)
+        return match.group(1) if match else None
 
     def _on_click(self, event, path):
         """点击缩略图：全屏显示原图"""
