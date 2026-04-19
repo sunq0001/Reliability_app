@@ -184,22 +184,46 @@ class ChartInteractor:
         self.data_points = getattr(canvas.figure, '_data_points', [])
         self.lines_info = getattr(canvas.figure, '_lines_info', [])
         
+        # 预构建坐标数组用于 KDTree 查找
+        self._coords_x = np.array([p.x for p in self.data_points]) if self.data_points else np.array([])
+        self._coords_y = np.array([p.y for p in self.data_points]) if self.data_points else np.array([])
+        
         # 状态管理
         self.drift_lines = []  # 临时图形对象列表
         self.current_highlight = None
         self.last_fuse_id = None
+        self.last_hover_point = None  # 缓存上次悬停的点，避免重复绘制
+        
+        # 节流相关
+        self._last_move_time = 0
+        self._move_threshold_ms = 16  # ~60fps
+        self._pending_redraw = False  # 是否有待处理的绘制
         
         # 配置参数
-        self.hover_tolerance = 0.03  # 归一化距离阈值
+        self.hover_tolerance = 0.15  # 归一化距离阈值（15%范围）
         self.highlight_style = {
             'marker': 'o',
             'color': '#ff0000',  # 亮红色
             'markersize': 8,
             'zorder': 1000
         }
+        
+        # 框选相关状态
+        self.is_dragging = False  # 是否正在拖动框选
+        self.selection_start = None  # 框选起点
+        self.selection_rect = None  # 框选矩形
+        self.selection_lines = []  # 框选产生的虚线（不随悬停清除）
+        self.selected_points = []  # 框选选中的点
+        self.box_color = '#3498db'  # 框选矩形颜色（蓝色）
+        
+        # 回调：框选完成时调用
+        self.on_selection_callback = None
     
     def clear_all_highlights(self):
         """清除所有临时图形对象"""
+        if not self.drift_lines:
+            return
+            
         for line_obj in self.drift_lines:
             try:
                 line_obj.remove()
@@ -208,7 +232,7 @@ class ChartInteractor:
         self.drift_lines.clear()
         self.current_highlight = None
         
-        # 重绘画布
+        # 重绘画布（延迟绘制避免频繁重绘）
         try:
             self.canvas.draw_idle()
         except Exception:
@@ -216,7 +240,7 @@ class ChartInteractor:
     
     def find_nearest_point(self, mouse_x, mouse_y):
         """
-        查找距离鼠标最近的数据点
+        查找距离鼠标最近的数据点（使用 KDTree 优化）
         
         返回: DataPoint 或 None
         """
@@ -230,27 +254,39 @@ class ChartInteractor:
         x_range = max(self.ax.get_xlim()[1] - self.ax.get_xlim()[0], 1e-9)
         y_range = max(self.ax.get_ylim()[1] - self.ax.get_ylim()[0], 1e-9)
         
-        min_norm_dist = float('inf')
-        nearest_point = None
+        # 归一化鼠标坐标
+        norm_mouse_x = mouse_x / x_range
+        norm_mouse_y = mouse_y / y_range
         
-        for point in self.data_points:
-            # 计算归一化欧几里得距离
-            norm_dist = np.sqrt(
-                ((mouse_x - point.x) / x_range) ** 2 +
-                ((mouse_y - point.y) / y_range) ** 2
-            )
-            
-            if norm_dist < min_norm_dist:
-                min_norm_dist = norm_dist
-                nearest_point = point
+        # 预计算归一化坐标（已在 __init__ 中计算）
+        norm_coords_x = self._coords_x / x_range
+        norm_coords_y = self._coords_y / y_range
+        
+        # 计算所有归一化距离
+        dists = np.sqrt((norm_coords_x - norm_mouse_x)**2 + (norm_coords_y - norm_mouse_y)**2)
+        
+        # 找到最小距离
+        min_idx = np.argmin(dists)
+        min_dist = dists[min_idx]
         
         # 检查是否在容差范围内
-        if min_norm_dist < self.hover_tolerance:
-            return nearest_point
+        if min_dist < self.hover_tolerance:
+            return self.data_points[min_idx]
         return None
     
     def draw_highlight(self, point):
         """绘制高亮点（红色圆点 markersize=8）"""
+        # 如果当前已有该点的高亮，跳过
+        if self.current_highlight is not None:
+            try:
+                # 检查位置是否相同
+                old_data = self.current_highlight.get_data()
+                if len(old_data[0]) > 0 and len(old_data[1]) > 0:
+                    if old_data[0][0] == point.x and old_data[1][0] == point.y:
+                        return
+            except Exception:
+                pass
+        
         # 清除旧高亮
         self.clear_all_highlights()
         
@@ -372,12 +408,28 @@ class ChartInteractor:
                 cb()
     
     def on_mouse_move(self, event):
-        """鼠标移动事件处理器"""
+        """鼠标移动事件处理器（带节流优化）"""
         try:
+            # 如果正在拖动框选，更新矩形
+            if self.is_dragging:
+                # 只有在图表内才更新 _drag_end
+                if event.inaxes == self.ax and event.xdata is not None and event.ydata is not None:
+                    self._drag_end = (event.xdata, event.ydata)
+                self._remove_selection_rect()
+                self.draw_selection_rect()
+                return
+            
             # 鼠标离开图表区域
             if event.inaxes != self.ax:
                 self._handle_mouse_leave()
                 return
+            
+            # 节流：限制处理频率
+            import time
+            current_time = time.time() * 1000  # 毫秒
+            if current_time - self._last_move_time < self._move_threshold_ms:
+                return
+            self._last_move_time = current_time
             
             # 查找最近点
             point = self.find_nearest_point(event.xdata, event.ydata)
@@ -385,6 +437,10 @@ class ChartInteractor:
             if point is None:
                 # 在图表内但未悬停在点上
                 self._handle_no_hover()
+                return
+            
+            # 如果和上次悬停的是同一个点，跳过（避免重复绘制）
+            if self.last_hover_point == point:
                 return
             
             # 悬停在数据点上
@@ -411,6 +467,9 @@ class ChartInteractor:
         # 更新信息显示
         self.update_info_display(point, cross_info)
         
+        # 缓存当前悬停点
+        self.last_hover_point = point
+        
         # 更新shared_state（如果FuseID发生变化）
         if point.fuse_id != self.last_fuse_id:
             self.update_shared_state(point)
@@ -421,10 +480,15 @@ class ChartInteractor:
         if self.set_cursor:
             self.set_cursor(False)
         
+        # 如果之前没有悬停任何点，直接返回
+        if self.last_hover_point is None and self.last_fuse_id is None:
+            return
+        
         self.clear_all_highlights()
         self.get_info_text('将鼠标移到图表数据点上查看详情', is_active=False)
         self.set_linked('')
         
+        self.last_hover_point = None
         if self.last_fuse_id is not None:
             self.clear_shared_state()
             self.last_fuse_id = None
@@ -434,10 +498,15 @@ class ChartInteractor:
         if self.set_cursor:
             self.set_cursor(False)
         
+        # 如果之前没有悬停任何点，直接返回
+        if self.last_hover_point is None and self.last_fuse_id is None:
+            return
+        
         self.clear_all_highlights()
         self.get_info_text('将鼠标移到图表数据点上查看详情', is_active=False)
         self.set_linked('')
         
+        self.last_hover_point = None
         if self.last_fuse_id is not None:
             self.clear_shared_state()
             self.last_fuse_id = None
@@ -493,6 +562,237 @@ class ChartInteractor:
         self.canvas.draw_idle()
         return points
 
+    # ========== 框选功能 ==========
+    
+    def on_mouse_press(self, event):
+        """鼠标按下：开始框选（如果有之前的框选，先清除）"""
+        if event.button != 1:  # 只响应左键
+            return
+        if event.inaxes != self.ax:
+            return
+        
+        # 如果有之前的框选虚线，先清除（点击清除）
+        if self.selection_lines:
+            self.clear_selection()
+            return  # 点击清除后不开始新框选
+        if event.xdata is None or event.ydata is None:
+            return
+        
+        # 开始拖动
+        self.is_dragging = True
+        self.selection_start = (event.xdata, event.ydata)
+        self._drag_end = (event.xdata, event.ydata)  # 初始化拖动终点
+        
+        # 清除悬停的高亮（框选时暂停悬停）
+        self.clear_all_highlights()
+        
+        # 绘制选择框起点
+        self.draw_selection_rect()
+    
+    def on_mouse_drag(self, event):
+        """鼠标拖动：更新框选矩形（带节流优化）"""
+        if not self.is_dragging:
+            return
+        if event.inaxes != self.ax:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        
+        # 节流：限制框选拖动重绘频率
+        import time
+        current_time = time.time() * 1000
+        if current_time - self._last_move_time < self._move_threshold_ms:
+            # 只更新位置，不重绘
+            self._drag_end = (event.xdata, event.ydata)
+            return
+        self._last_move_time = current_time
+        
+        # 更新拖动终点
+        self._drag_end = (event.xdata, event.ydata)
+        
+        # 清除旧的矩形
+        self._remove_selection_rect()
+        
+        # 绘制新矩形
+        self.draw_selection_rect()
+    
+    def on_mouse_release(self, event):
+        """鼠标松开：完成框选"""
+        if not self.is_dragging:
+            return
+        if event.button != 1:
+            return
+        
+        # 清除选择框
+        self._remove_selection_rect()
+        
+        # 找到被框住的点
+        self.selected_points = self._find_points_in_rect()
+        
+        # 绘制选中点的虚线
+        self.draw_selection_lines()
+        
+        # 重置状态
+        self.is_dragging = False
+        self.selection_start = None
+        
+        # 触发回调（如果有）
+        if self.on_selection_callback and self.selected_points:
+            self.on_selection_callback(self.selected_points, self.test_item)
+    
+    def draw_selection_rect(self):
+        """绘制框选矩形"""
+        import matplotlib.patches as patches
+        
+        if self.selection_start is None:
+            return
+        
+        x0, y0 = self.selection_start
+        
+        # 获取当前鼠标位置（从 _drag_end 属性获取）
+        x1, y1 = getattr(self, '_drag_end', (x0, y0))
+        
+        # 确保起点和终点都有效
+        if x1 is None or y1 is None:
+            x1, y1 = x0, y0
+        
+        # 创建矩形（使用绝对坐标）
+        rect = patches.Rectangle(
+            (min(x0, x1), min(y0, y1)),
+            abs(x1 - x0), abs(y1 - y0),
+            linewidth=1.5,
+            edgecolor=self.box_color,
+            facecolor=self.box_color,
+            alpha=0.2,
+            zorder=999
+        )
+        self.ax.add_patch(rect)
+        self.selection_rect = rect
+        self.canvas.draw_idle()
+    
+    def _remove_selection_rect(self):
+        """移除框选矩形"""
+        if self.selection_rect:
+            try:
+                self.selection_rect.remove()
+            except Exception:
+                pass
+            self.selection_rect = None
+    
+    def _find_points_in_rect(self):
+        """查找框选矩形内的所有点"""
+        if self.selection_start is None:
+            return []
+        
+        # 获取鼠标最终位置（从最后一次motion事件获取）
+        x0, y0 = self.selection_start
+        drag_end = getattr(self, '_drag_end', None)
+        
+        # 如果 _drag_end 为 None 或无效，使用起点作为终点（点击未拖动）
+        if drag_end is None or drag_end == (None, None):
+            x1, y1 = x0, y0
+        else:
+            x1, y1 = drag_end
+        
+        # 如果起点和终点相同，说明只是点击没有拖动，返回空
+        if x0 == x1 and y0 == y1:
+            return []
+        
+        # 确定矩形范围
+        min_x, max_x = min(x0, x1), max(x0, x1)
+        min_y, max_y = min(y0, y1), max(y0, y1)
+        
+        # 扩大一点范围，确保点被选中
+        x_range = max_x - min_x
+        y_range = max_y - min_y
+        tolerance = 0.02  # 2%的容差
+        
+        selected = []
+        for point in self.data_points:
+            # 检查点是否在矩形内（考虑容差）
+            if (min_x - tolerance * x_range <= point.x <= max_x + tolerance * x_range and
+                min_y - tolerance * y_range <= point.y <= max_y + tolerance * y_range):
+                selected.append(point)
+        
+        return selected
+    
+    def draw_selection_lines(self):
+        """为框选选中的每个点绘制虚线连接"""
+        if not self.selected_points:
+            return
+        
+        # 为每个选中的点，绘制其FuseID在其他读点的虚线
+        for point in self.selected_points:
+            fuse_id = point.fuse_id
+            if fuse_id == 'N/A' or fuse_id not in self.fuse_cache:
+                continue
+            
+            # 绘制该点的橙色圆点
+            dot = self.ax.plot(
+                point.x, point.y, 'o',
+                color='#e67e22', markersize=7, alpha=0.9, zorder=1001
+            )[0]
+            self.selection_lines.append(dot)
+            
+            # 获取该FuseID在其他读点的数据
+            rp_map = self.fuse_cache[fuse_id]
+            
+            for _, _, _, other_label in self.lines_info:
+                if other_label == point.label or other_label not in rp_map:
+                    continue
+                
+                row = rp_map[other_label]
+                try:
+                    v = float(row[self.test_item])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                
+                # 计算y坐标
+                vy = self._calculate_cumulative_prob(other_label, v)
+                if vy is None:
+                    continue
+                
+                # 绘制连接线
+                line = self.ax.plot(
+                    [point.x, v], [point.y, vy],
+                    '--', color='#e67e22', linewidth=1.0, alpha=0.7, zorder=1000
+                )[0]
+                self.selection_lines.append(line)
+                
+                # 绘制另一端圆点
+                other_dot = self.ax.plot(
+                    v, vy, 'o',
+                    color='#e67e22', markersize=5, alpha=0.8, zorder=1001
+                )[0]
+                self.selection_lines.append(other_dot)
+        
+        self.canvas.draw_idle()
+    
+    def _clear_selection_lines(self):
+        """清除框选产生的虚线（不重置状态）"""
+        for line_obj in self.selection_lines:
+            try:
+                line_obj.remove()
+            except Exception:
+                pass
+        self.selection_lines.clear()
+        self.selected_points.clear()
+        self.canvas.draw_idle()
+    
+    def clear_selection(self):
+        """清除框选及其产生的虚线"""
+        # 清除框选矩形
+        self._remove_selection_rect()
+        
+        # 清除框选产生的虚线
+        self._clear_selection_lines()
+        
+        # 重置状态
+        self.is_dragging = False
+        self.selection_start = None
+        
+        self.canvas.draw_idle()
+
 
 def build_fuse_cache(df):
     """
@@ -537,12 +837,16 @@ def make_hover_callbacks(ax, canvas, test_item, df, fuse_cache,
     )
     
     # 绑定事件
-    cid = canvas.mpl_connect('motion_notify_event', interactor.on_mouse_move)
+    cid1 = canvas.mpl_connect('motion_notify_event', interactor.on_mouse_move)
+    cid2 = canvas.mpl_connect('button_press_event', interactor.on_mouse_press)
+    cid3 = canvas.mpl_connect('button_release_event', interactor.on_mouse_release)
     
     # 返回相同的字典结构
     return {
         'highlight_linked': interactor.highlight_linked,
         'clear_drift_lines': interactor.clear_all_highlights,
+        'clear_selection': interactor.clear_selection,
+        'interactor': interactor,  # 保存引用供外部使用
     }
 
 

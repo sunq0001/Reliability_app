@@ -61,6 +61,12 @@ class ChartViewer:
         self._data_point_win = None
         # 联动信息缓存
         self._linked_info = {}
+        
+        # 框选相关状态
+        self._selected_fuse_ids = []  # 当前选中的FuseID列表
+        self._selection_test_item = None  # 框选发生的图表名称
+        self._chart_items = []  # 所有图表项名称（用于Tab）
+        self._expanded_fuse_ids = set()  # 当前展开的FuseID集合
 
     # ---- 对外暴露的 API ----
 
@@ -372,11 +378,27 @@ class ChartViewer:
             get_info_text, set_linked_text, set_cursor_fn=_set_cursor
         )
 
+        # 保存interactor引用
+        interactor = result.get('interactor')
+        
         # 注册进 shared_state 供联动
         if shared_state is not None and isinstance(result, dict):
             shared_state['canvases'].append(
-                (ax, canvas, test_item, result.get('highlight_linked'))
+                (ax, canvas, test_item, result.get('highlight_linked'), interactor)
             )
+        
+        # 设置框选回调
+        if interactor:
+            def _on_selection(selected_points, test_item_name):
+                # 收集所有选中FuseID
+                selected_fuse_ids = list(set(p.fuse_id for p in selected_points if p.fuse_id != 'N/A'))
+                # 更新选中状态
+                self._selected_fuse_ids = selected_fuse_ids
+                self._selection_test_item = test_item_name
+                # 更新详情面板
+                self._update_selection_panel()
+            
+            interactor.on_selection_callback = _on_selection
 
         # 保存最后一次 hover 的芯片信息（供"查看抓图"按钮使用）
         def _track_fuse():
@@ -389,11 +411,14 @@ class ChartViewer:
             self._update_dialog_info()
             # hover 到数据点时变成手型
             _set_cursor(True)
-            # 联动其他图表：高亮同一 FuseID 的数据点
+            # 联动其他图表：高亮同一 FuseID 的数据点（排除当前canvas避免清除自己的高亮）
             if self._last_fuse_id and self._last_fuse_id != 'N/A':
-                for ax, other_canvas, other_item, highlight_fn in ss.get('canvases', []):
-                    if highlight_fn:
-                        highlight_fn(self._last_fuse_id)
+                for canvas_item in ss.get('canvases', []):
+                    # 解包5个元素: (ax, other_canvas, other_item, highlight_fn, interactor)
+                    if len(canvas_item) >= 4:
+                        _, other_canvas, _, highlight_fn = canvas_item[:4]
+                        if other_canvas is not canvas and highlight_fn:  # 排除当前canvas
+                            highlight_fn(self._last_fuse_id)
 
         canvas._on_fuse_highlight = _track_fuse
 
@@ -405,11 +430,13 @@ class ChartViewer:
             self._last_timestamp   = None
             self._last_test_value  = None
             self._update_dialog_info()
-            # 清除所有图表的高亮
+            # 清除其他图表的高亮（排除当前canvas）
             ss = getattr(canvas, '_shared_state', {})
-            for ax, other_canvas, other_item, highlight_fn in ss.get('canvases', []):
-                if highlight_fn:
-                    highlight_fn(None)  # 传入 None 清除高亮
+            for canvas_item in ss.get('canvases', []):
+                if len(canvas_item) >= 4:
+                    _, other_canvas, _, highlight_fn = canvas_item[:4]
+                    if other_canvas is not canvas and highlight_fn:
+                        highlight_fn(None)  # 传入 None 清除高亮
 
         canvas._on_fuse_clear = _clear_fuse
 
@@ -677,7 +704,7 @@ class ChartViewer:
         canvas.mpl_connect('scroll_event', on_wheel)
 
     def _show_data_point_dialog(self):
-        """点击「查看数据点」按钮：切换显示/隐藏实时详情面板"""
+        """点击「查看数据点」按钮：切换显示/隐藏实时详情面板（方案B：按Chart分标签页）"""
         if self._data_point_win is not None and self._data_point_win.winfo_exists():
             self._data_point_win.destroy()
             self._data_point_win = None
@@ -687,13 +714,14 @@ class ChartViewer:
         self._data_point_win = top
         top.title('数据点详情')
         top.configure(bg='#f8f9fa')
-        top.geometry('900x600')  # 扩大对话框尺寸
+        top.geometry('1100x700')
         top.resizable(True, True)
 
+        # 标题栏
         hdr = tk.Frame(top, bg='#6366f1', height=36)
         hdr.pack(fill='x')
         hdr.pack_propagate(False)
-        tk.Label(hdr, text='  数据点详情（随鼠标移动实时更新）', bg='#6366f1', fg='white',
+        tk.Label(hdr, text='  数据点详情（悬停/框选查看）', bg='#6366f1', fg='white',
                  font=('Microsoft YaHei', 10, 'bold')).pack(side='left', pady=8)
 
         def _close():
@@ -706,8 +734,8 @@ class ChartViewer:
                  padx=12, pady=0, highlightthickness=0).pack(side='right', pady=0)
 
         # 搜索栏
-        search_frame = tk.Frame(top, bg='#f8f9fa', height=40)
-        search_frame.pack(fill='x', padx=16, pady=(12, 0))
+        search_frame = tk.Frame(top, bg='#f8f9fa', height=38)
+        search_frame.pack(fill='x', padx=16, pady=(10, 0))
         search_frame.pack_propagate(False)
         tk.Label(search_frame, text='查询:', bg='#f8f9fa', fg='#374151',
                  font=('Microsoft YaHei', 9)).pack(side='left', padx=(0, 6))
@@ -717,81 +745,136 @@ class ChartViewer:
                                font=('Microsoft YaHei', 9), width=30)
         search_entry.pack(side='left', padx=(0, 6))
         search_entry.bind('<Return>', lambda e: self._on_search())
-        tk.Button(search_frame, text='查询 FuseID', command=lambda: self._on_search('fuse'),
+        tk.Button(search_frame, text='查询FuseID', command=lambda: self._on_search('fuse'),
                  bg='#3b82f6', fg='white', relief='flat', cursor='hand1',
                  font=('Microsoft YaHei', 9), padx=12, pady=2).pack(side='left', padx=2)
-        tk.Button(search_frame, text='查询 时间戳', command=lambda: self._on_search('timestamp'),
+        tk.Button(search_frame, text='查询时间戳', command=lambda: self._on_search('timestamp'),
                  bg='#10b981', fg='white', relief='flat', cursor='hand1',
                  font=('Microsoft YaHei', 9), padx=12, pady=2).pack(side='left', padx=2)
-        tk.Button(search_frame, text='清除高亮', command=self._clear_search_highlight,
+        tk.Button(search_frame, text='清除', command=self._clear_search_highlight,
                  bg='#ef4444', fg='white', relief='flat', cursor='hand1',
                  font=('Microsoft YaHei', 9), padx=12, pady=2).pack(side='left', padx=2)
 
+        # 主体区域
         body = tk.Frame(top, bg='#f8f9fa')
-        body.pack(fill='both', expand=True, padx=16, pady=12)
+        body.pack(fill='both', expand=True, padx=16, pady=10)
 
+        # 左侧：当前选中芯片信息
         left = tk.Frame(body, bg='white', relief='solid', bd=1)
-        left.pack(side='left', fill='both', expand=True, padx=(0, 8))
+        left.pack(side='left', fill='y', padx=(0, 8))
+
+        tk.Label(left, text='当前芯片', anchor='w',
+                bg='#6366f1', fg='white',
+                font=('Microsoft YaHei', 9, 'bold'),
+                padx=10, pady=6).pack(fill='x')
 
         for lbl, key in [
             ('FuseID', 'fuse_id'),
             ('时间戳', 'timestamp'),
-            ('ReadPoint', 'readpoint'),
-            ('测试值', 'test_value'),
+            ('读点', 'readpoint'),
+            ('值', 'test_value'),
         ]:
-            row = tk.Frame(left, bg='white', pady=4, padx=10)
+            row = tk.Frame(left, bg='white', pady=5, padx=10)
             row.pack(fill='x')
-            tk.Label(row, text=lbl + '：', width=8, anchor='w',
+            tk.Label(row, text=lbl + ':', width=6, anchor='w',
                     bg='white', fg='#64748b',
                     font=('Microsoft YaHei', 9, 'bold')).pack(side='left')
-            # 创建用于显示数据的标签，允许长文本自动换行
             data_label = tk.Label(row, text='-', anchor='w', bg='white', fg='#1e293b',
-                                 font=('Microsoft YaHei', 9), wraplength=400, justify='left')
+                                 font=('Microsoft YaHei', 9), wraplength=200, justify='left')
             setattr(self, f'_dlg_{key}_lbl', data_label)
             data_label.pack(side='left', fill='x', expand=True)
 
+        # 左侧按钮
+        btn_row = tk.Frame(left, bg='white', pady=8, padx=10)
+        btn_row.pack(fill='x')
+        tk.Button(btn_row, text='查看抓图', command=self._on_view_images,
+                 bg='#3b82f6', fg='white', relief='flat', cursor='hand1',
+                 font=('Microsoft YaHei', 9), padx=10, pady=4).pack(side='left', padx=2)
+
+        # 右侧：Notebook标签页（按当前显示的Chart分）
         right = tk.Frame(body, bg='#f8f9fa')
         right.pack(side='right', fill='both', expand=True)
 
-        # 联动信息区域（带滚动条的文本框）
-        linked_frame = tk.Frame(right, bg='white', relief='solid', bd=1)
-        linked_frame.pack(fill='both', expand=True, pady=(0, 10))
-        tk.Label(linked_frame, text='联动信息', anchor='w',
-                bg='white', fg='#64748b',
-                font=('Microsoft YaHei', 9, 'bold'),
-                padx=10, pady=4).pack(anchor='w')
-        # 创建文本框和滚动条
-        text_frame = tk.Frame(linked_frame, bg='white')
-        text_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
-        text_scrollbar = tk.Scrollbar(text_frame, orient='vertical')
-        text_scrollbar.pack(side='right', fill='y')
-        self._dlg_linked_text = tk.Text(text_frame, wrap='word', height=12,
-                                       bg='white', fg='#1e293b',
+        # 创建Notebook
+        self._chart_notebook = ttk.Notebook(right)
+        self._chart_notebook.pack(fill='both', expand=True)
+        
+        # 存储每个标签页的文本框引用
+        self._chart_tab_texts = {}
+        
+        # 获取当前显示的图表项（根据分屏数量）
+        all_items = self._cb['get_chart_items']()
+        self._chart_items = all_items if all_items else []
+        
+        # 根据分屏数量确定当前显示的图表项
+        n = int(self._split_var.get())
+        start_idx = self._idx
+        end_idx = min(self._idx + n, len(all_items))
+        current_items = all_items[start_idx:end_idx] if all_items else []
+        
+        # 为当前显示的Chart创建标签页
+        for item in current_items:
+            tab = tk.Frame(self._chart_notebook, bg='white')
+            self._chart_notebook.add(tab, text=item[:30])  # 截断长名称
+            
+            # 标签页内容区域
+            content = tk.Frame(tab, bg='white')
+            content.pack(fill='both', expand=True, padx=8, pady=8)
+            
+            # 标题
+            tk.Label(content, text=item, anchor='w',
+                    bg='#f1f5f9', fg='#334155',
+                    font=('Microsoft YaHei', 9, 'bold'),
+                    padx=8, pady=4).pack(fill='x')
+            
+            # 文本框（用于显示该Chart上的数据）
+            text_frame = tk.Frame(content, bg='white')
+            text_frame.pack(fill='both', expand=True, pady=(4, 0))
+            
+            scroll_y = tk.Scrollbar(text_frame, orient='vertical')
+            scroll_y.pack(side='right', fill='y')
+            
+            scroll_x = tk.Scrollbar(text_frame, orient='horizontal')
+            scroll_x.pack(side='bottom', fill='x')
+            
+            tab_text = tk.Text(text_frame, wrap='none', height=15,
+                              bg='white', fg='#1e293b',
+                              font=('Consolas', 9),
+                              yscrollcommand=scroll_y.set,
+                              xscrollcommand=scroll_x.set)
+            tab_text.pack(side='left', fill='both', expand=True)
+            
+            scroll_y.config(command=tab_text.yview)
+            scroll_x.config(command=tab_text.xview)
+            
+            self._chart_tab_texts[item] = tab_text
+        
+        # 框选信息区域
+        sel_hdr = tk.Frame(right, bg='#fff8e7', height=30)
+        sel_hdr.pack(fill='x', pady=(8, 0))
+        sel_hdr.pack_propagate(False)
+        tk.Label(sel_hdr, text='  框选信息', bg='#fff8e7', fg='#e67e22',
+                 font=('Microsoft YaHei', 9, 'bold')).pack(side='left', pady=4)
+        
+        sel_content = tk.Frame(right, bg='white', relief='solid', bd=1)
+        sel_content.pack(fill='x', pady=(0, 8))
+        
+        sel_text_frame = tk.Frame(sel_content, bg='white')
+        sel_text_frame.pack(fill='x', padx=8, pady=6)
+        
+        self._selection_text = tk.Text(sel_text_frame, wrap='word', height=4,
+                                       bg='#fff8e7', fg='#1e293b',
                                        font=('Consolas', 9),
-                                       yscrollcommand=text_scrollbar.set,
                                        state='disabled')
-        self._dlg_linked_text.pack(side='left', fill='both', expand=True)
-        text_scrollbar.config(command=self._dlg_linked_text.yview)
-
-        # 按钮区域
-        btn_frame = tk.Frame(right, bg='#f8f9fa')
-        btn_frame.pack(fill='x', pady=(0, 10))
-        tk.Button(btn_frame, text='[ 查看抓图 ]',
-                 command=self._on_view_images,
-                 bg='#3b82f6', fg='white',
-                 relief='flat', cursor='hand1',
-                 font=('Microsoft YaHei', 9, 'bold'),
-                 activebackground='#2563eb', activeforeground='white',
-                 padx=14, pady=6).pack(side='left', padx=2)
-        tk.Button(btn_frame, text='[ 复制联动信息 ]',
-                 command=self._copy_linked_info,
-                 bg='#8b5cf6', fg='white',
-                 relief='flat', cursor='hand1',
-                 font=('Microsoft YaHei', 9, 'bold'),
-                 activebackground='#7c3aed', activeforeground='white',
-                 padx=14, pady=6).pack(side='left', padx=2)
+        self._selection_text.pack(fill='x')
+        
+        # 初始提示
+        self._selection_text.config(state='normal')
+        self._selection_text.insert('1.0', "拖动框选多个数据点，查看同芯片其他读点的值...")
+        self._selection_text.config(state='disabled')
 
         self._update_dialog_info()
+        self._update_selection_panel()
 
     def _collect_linked_info(self, fuse_id):
         """
@@ -825,7 +908,7 @@ class ChartViewer:
         return result
 
     def _update_dialog_info(self):
-        """更新详情面板中的标签文字（实时联动）"""
+        """更新详情面板中的标签文字（实时联动）- 方案B按Chart分标签页"""
         if self._data_point_win is None or not self._data_point_win.winfo_exists():
             return
 
@@ -842,25 +925,127 @@ class ChartViewer:
             if lbl and lbl.winfo_exists():
                 lbl.config(text=str(val) if val else '-')
 
-        # 收集联动信息并格式化显示
+        # 收集该FuseID在所有Chart上的数据，并更新对应标签页
         if self._last_fuse_id and self._last_fuse_id != 'N/A':
             linked_info = self._collect_linked_info(self._last_fuse_id)
-            # 格式化输出
-            lines = []
-            for test_item, rp_map in linked_info.items():
-                lines.append(f'{test_item}:')
-                for rp, val in rp_map.items():
-                    lines.append(f'  {rp}: {val:.6f}')
-            linked_text = '\n'.join(lines) if lines else '-'
+            
+            # 更新每个Chart标签页
+            for test_item, tab_text in self._chart_tab_texts.items():
+                if not tab_text.winfo_exists():
+                    continue
+                
+                tab_text.config(state='normal')
+                tab_text.delete('1.0', tk.END)
+                
+                if test_item in linked_info:
+                    rp_map = linked_info[test_item]
+                    # 按读点排序
+                    sorted_rps = sorted(rp_map.items(), key=lambda x: (int(re.search(r'\d+', str(x[0])).group()) if re.search(r'\d+', str(x[0])) else 0, str(x[0])))
+                    
+                    for rp, val in sorted_rps:
+                        # 高亮当前悬停的读点
+                        marker = '▶ ' if rp == self._last_readpoint else '  '
+                        tab_text.insert(tk.END, f'{marker}{rp}: {val:.6f}\n')
+                else:
+                    tab_text.insert(tk.END, '该芯片无此测试项数据\n')
+                
+                tab_text.config(state='disabled')
         else:
-            linked_text = '-'
+            # 无悬停数据，清空所有标签页
+            for test_item, tab_text in self._chart_tab_texts.items():
+                if tab_text.winfo_exists():
+                    tab_text.config(state='normal')
+                    tab_text.delete('1.0', tk.END)
+                    tab_text.insert(tk.END, '悬停或框选数据点查看详情...')
+                    tab_text.config(state='disabled')
+
+    def _update_selection_panel(self):
+        """更新框选详情面板 - 方案B：框选信息同步更新到对应Chart标签页"""
+        if self._data_point_win is None or not self._data_point_win.winfo_exists():
+            return
         
-        # 更新文本框
-        if hasattr(self, '_dlg_linked_text') and self._dlg_linked_text.winfo_exists():
-            self._dlg_linked_text.config(state='normal')
-            self._dlg_linked_text.delete('1.0', tk.END)
-            self._dlg_linked_text.insert('1.0', linked_text)
-            self._dlg_linked_text.config(state='disabled')
+        # 更新框选选中信息区域
+        if hasattr(self, '_selection_text') and self._selection_text.winfo_exists():
+            if self._selected_fuse_ids:
+                # 格式化显示
+                lines = [f"框选了 {len(self._selected_fuse_ids)} 个芯片："]
+                lines.append("=" * 40)
+                
+                # 按FuseID分组显示
+                for fuse_id in sorted(self._selected_fuse_ids):
+                    fuse_data = self._get_fuse_data_by_item(fuse_id, self._selection_test_item)
+                    if fuse_data:
+                        rp_count = len(fuse_data)
+                        lines.append(f"")
+                        lines.append(f"FuseID: {fuse_id} ({rp_count}个读点)")
+                
+                self._selection_text.config(state='normal')
+                self._selection_text.delete('1.0', tk.END)
+                self._selection_text.insert('1.0', '\n'.join(lines))
+                self._selection_text.config(state='disabled')
+            else:
+                self._selection_text.config(state='normal')
+                self._selection_text.delete('1.0', tk.END)
+                self._selection_text.insert('1.0', "拖动框选多个数据点，查看同芯片其他读点的值...")
+                self._selection_text.config(state='disabled')
+        
+        # 更新每个Chart标签页，显示所有选中芯片的数据
+        if self._selected_fuse_ids and hasattr(self, '_chart_tab_texts'):
+            for test_item, tab_text in self._chart_tab_texts.items():
+                if not tab_text.winfo_exists():
+                    continue
+                
+                tab_text.config(state='normal')
+                tab_text.delete('1.0', tk.END)
+                
+                # 显示所有选中芯片在该Chart上的数据
+                for fuse_id in sorted(self._selected_fuse_ids):
+                    fuse_data = self._get_fuse_data_by_item(fuse_id, test_item)
+                    if fuse_data:
+                        # 按读点排序
+                        sorted_rps = sorted(fuse_data.items(), 
+                                          key=lambda x: (int(re.search(r'\d+', str(x[0])).group()) if re.search(r'\d+', str(x[0])) else 0, str(x[0])))
+                        
+                        tab_text.insert(tk.END, f'【{fuse_id}】\n')
+                        for rp, (val, ts) in sorted_rps:
+                            val_str = f"{val:.6f}" if val is not None else "N/A"
+                            tab_text.insert(tk.END, f'  {rp}: {val_str}\n')
+                        tab_text.insert(tk.END, '\n')
+                
+                tab_text.config(state='disabled')
+        elif hasattr(self, '_chart_tab_texts'):
+            # 无框选但有悬停，调用 _update_dialog_info 来更新
+            self._update_dialog_info()
+    
+    def _get_fuse_data_by_item(self, fuse_id, test_item):
+        """
+        获取指定FuseID在指定测试项下的数据
+        返回: {readpoint: (value, timestamp), ...}
+        """
+        if not fuse_id or fuse_id == 'N/A':
+            return {}
+        df = self._cb['get_current_df']()
+        if df is None or not test_item:
+            return {}
+        
+        fuse_rows = df[df['FuseID'] == fuse_id]
+        if fuse_rows.empty:
+            return {}
+        
+        result = {}
+        time_col = 1 if 1 in df.columns else ('Time' if 'Time' in df.columns else None)
+        
+        for _, row in fuse_rows.iterrows():
+            readpoint = str(row['SN'])
+            value = row.get(test_item)
+            ts = row[time_col] if time_col and time_col in row else None
+            if pd.notna(value):
+                try:
+                    result[readpoint] = (float(value), str(ts) if ts else None)
+                except (ValueError, TypeError):
+                    result[readpoint] = (None, str(ts) if ts else None)
+        
+        return result
 
     def _on_search(self, search_type=None):
         """
@@ -943,9 +1128,11 @@ class ChartViewer:
         # 触发联动高亮
         ss = getattr(self._canvas, '_shared_state', {}) if self._canvas else {}
         if fuse_id and fuse_id != 'N/A':
-            for ax, other_canvas, other_item, highlight_fn in ss.get('canvases', []):
-                if highlight_fn:
-                    highlight_fn(fuse_id)
+            for canvas_item in ss.get('canvases', []):
+                if len(canvas_item) >= 4:
+                    _, _, _, highlight_fn = canvas_item[:4]
+                    if highlight_fn:
+                        highlight_fn(fuse_id)
         
         # 更新详情面板
         self._update_dialog_info()
@@ -953,9 +1140,11 @@ class ChartViewer:
     def _clear_search_highlight(self):
         """清除所有图表的高亮显示"""
         ss = getattr(self._canvas, '_shared_state', {}) if self._canvas else {}
-        for ax, other_canvas, other_item, highlight_fn in ss.get('canvases', []):
-            if highlight_fn:
-                highlight_fn(None)
+        for canvas_item in ss.get('canvases', []):
+            if len(canvas_item) >= 4:
+                _, _, _, highlight_fn = canvas_item[:4]
+                if highlight_fn:
+                    highlight_fn(None)
         # 清空当前悬停信息
         self._last_fuse_id = None
         self._last_readpoint = None
