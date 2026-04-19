@@ -675,44 +675,79 @@ class ReliabilityAnalysisApp:
     def _open_image_viewer(self, fuse_id, readpoint=None, timestamp=None):
         """由 ChartViewer 的「查看抓图」按钮触发：显示对应芯片的所有抓图"""
         # 如果没有独立的抓图扫描结果，尝试从项目扫描结果获取
-        if self._image_scan_result is None and self._project_scan_result is not None:
+        if self._image_scan_result is None:
             from src.image_scanner import scan_image_root, find_images_for_fuse
-            # 从项目扫描结果构建抓图根目录
-            root_paths = set()
-            for rp in self._project_scan_result.readpoints:
-                if rp.image_folder:
-                    # image_folder 格式: .../读点文件夹/image/
-                    # 需要获取上级目录作为抓图根目录
-                    root_paths.add(os.path.dirname(os.path.dirname(rp.image_folder)))
             
-            if root_paths:
-                # 合并扫描多个根目录的结果
+            # 方式1: 从项目扫描结果获取
+            if self._project_scan_result is not None:
+                root_paths = set()
+                for rp in self._project_scan_result.readpoints:
+                    if rp.image_folder:
+                        # image_folder 格式: .../读点文件夹/image/
+                        # 获取上级目录作为抓图根目录
+                        root_paths.add(os.path.dirname(os.path.dirname(rp.image_folder)))
+                
+                if root_paths:
+                    combined_result = {
+                        'readpoints': {},
+                        'global_ts': {},
+                        'stats': {'total_images': 0, 'readpoints_found': []}
+                    }
+                    for root in root_paths:
+                        result = scan_image_root(root)
+                        for rp_name, ts_map in result.get('readpoints', {}).items():
+                            if rp_name not in combined_result['readpoints']:
+                                combined_result['readpoints'][rp_name] = {}
+                            for ts, paths in ts_map.items():
+                                if ts not in combined_result['readpoints'][rp_name]:
+                                    combined_result['readpoints'][rp_name][ts] = []
+                                combined_result['readpoints'][rp_name][ts].extend(paths)
+                        combined_result['stats']['total_images'] += result.get('stats', {}).get('total_images', 0)
+                        combined_result['stats']['readpoints_found'].extend(result.get('stats', {}).get('readpoints_found', []))
+                        for ts, paths in result.get('global_ts', {}).items():
+                            if ts not in combined_result['global_ts']:
+                                combined_result['global_ts'][ts] = []
+                            combined_result['global_ts'][ts].extend(paths)
+                    
+                    self._image_scan_result = combined_result
+                    self.log(f"[抓图] 从项目目录扫描到 {combined_result['stats']['total_images']} 张图片", 'info')
+            
+            # 方式2: 直接从 _project_scan_result 读取图片
+            if self._image_scan_result is None and self._project_scan_result is not None:
+                from src.project_scanner import get_all_images_by_readpoint
                 combined_result = {
                     'readpoints': {},
                     'global_ts': {},
                     'stats': {'total_images': 0, 'readpoints_found': []}
                 }
-                for root in root_paths:
-                    result = scan_image_root(root)
-                    # 合并到 combined_result
-                    for rp_name, ts_map in result.get('readpoints', {}).items():
-                        if rp_name not in combined_result['readpoints']:
-                            combined_result['readpoints'][rp_name] = {}
-                        for ts, paths in ts_map.items():
-                            if ts not in combined_result['readpoints'][rp_name]:
-                                combined_result['readpoints'][rp_name][ts] = []
-                            combined_result['readpoints'][rp_name][ts].extend(paths)
-                    combined_result['stats']['total_images'] += result.get('stats', {}).get('total_images', 0)
-                    combined_result['stats']['readpoints_found'].extend(result.get('stats', {}).get('readpoints_found', []))
-                    # 合并全局时间戳
-                    for ts, paths in result.get('global_ts', {}).items():
-                        if ts not in combined_result['global_ts']:
-                            combined_result['global_ts'][ts] = []
-                        combined_result['global_ts'][ts].extend(paths)
-                
-                # 使用合并的结果
-                self._image_scan_result = combined_result
-                self.log(f"[抓图] 从项目目录扫描到 {combined_result['stats']['total_images']} 张图片", 'info')
+                df = getattr(self, '_current_df', None)
+                if df is not None:
+                    time_col = 1 if 1 in df.columns else ('Time' if 'Time' in df.columns else None)
+                    fuse_col = 'FuseID' if 'FuseID' in df.columns else None
+                    
+                    # 找匹配 FuseID 的行
+                    if fuse_col:
+                        matched = df[df[fuse_col].astype(str).str.strip() == str(fuse_id).strip()]
+                        if not matched.empty and time_col:
+                            ts = str(matched.iloc[0][time_col]).strip()
+                            
+                            # 从项目扫描结果直接获取该时间戳的图片
+                            for rp in self._project_scan_result.readpoints:
+                                if rp.image_folder:
+                                    import glob
+                                    pattern = os.path.join(rp.image_folder, f"*{ts}*")
+                                    paths = glob.glob(pattern)
+                                    if paths:
+                                        if rp.folder_name not in combined_result['readpoints']:
+                                            combined_result['readpoints'][rp.folder_name] = {}
+                                        combined_result['readpoints'][rp.folder_name][ts] = paths
+                                        combined_result['global_ts'][ts] = paths
+                                        combined_result['stats']['total_images'] += len(paths)
+                                        combined_result['stats']['readpoints_found'].append(rp.folder_name)
+                            
+                            if combined_result['stats']['total_images'] > 0:
+                                self._image_scan_result = combined_result
+                                self.log(f"[抓图] 直接获取 {combined_result['stats']['total_images']} 张图片", 'info')
         
         if self._image_scan_result is None:
             messagebox.showinfo("提示",
