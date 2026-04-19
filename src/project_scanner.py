@@ -44,6 +44,26 @@ class ProjectScanResult:
     root_name: str
     readpoints: List[ReadPointInfo] = field(default_factory=list)
     mode: str = 'auto'  # 'auto' = 扫描根目录, 'single' = 直接选择读点目录
+    # 图片索引：{读点文件夹名: {时间戳: [(场景名, 路径), ...]}}
+    image_index: Dict[str, Dict[str, List[Tuple[str, str]]]] = field(default_factory=dict)
+
+    def get_images(self, readpoint_folder: str, timestamp: str) -> List[Tuple[str, str]]:
+        """
+        根据读点文件夹名和时间戳获取图片列表
+
+        参数:
+            readpoint_folder: 读点文件夹名，如 "168H", "500H"
+            timestamp: 时间戳字符串，如 "20260204012242"
+
+        返回: [(场景名, 路径), ...]
+        """
+        if readpoint_folder in self.image_index:
+            return self.image_index[readpoint_folder].get(timestamp, [])
+        return []
+
+    def get_all_images_for_readpoint(self, readpoint_folder: str) -> Dict[str, List[Tuple[str, str]]]:
+        """获取读点的所有图片（按时间戳分组）"""
+        return self.image_index.get(readpoint_folder, {})
 
 
 def extract_readpoint_number(folder_name: str) -> Optional[int]:
@@ -138,15 +158,15 @@ def scan_image_timestamps(image_folder: str) -> List[str]:
 def get_images_for_timestamp(image_folder: str, timestamp: str) -> List[Tuple[str, str]]:
     """
     获取指定时间戳下的所有图片
-    
+
     返回: List[(场景名, 文件路径)]，如 [('Dark', '.../Dark.png'), ('Mid', '.../Mid.png')]
     """
     import re
     images = []
-    
+
     if not image_folder or not os.path.isdir(image_folder):
         return images
-    
+
     # 时间戳文件夹
     if timestamp != '_root_':
         ts_folder = os.path.join(image_folder, timestamp)
@@ -155,12 +175,12 @@ def get_images_for_timestamp(image_folder: str, timestamp: str) -> List[Tuple[st
         folder = ts_folder
     else:
         folder = image_folder
-    
+
     # 扫描图片文件
     for f in os.listdir(folder):
         if not f.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
             continue
-        
+
         # 解析场景名：格式如 Dark_0_20260204012242.png
         # 场景名 = 文件名中时间戳之前的部分
         match = re.match(r'([^_]+)_(\d+)_(\d+)\.(png|jpg|jpeg|bmp)', f, re.IGNORECASE)
@@ -169,11 +189,67 @@ def get_images_for_timestamp(image_folder: str, timestamp: str) -> List[Tuple[st
         else:
             # 备用：从文件名提取第一部分
             scene_name = os.path.splitext(f)[0].split('_')[0]
-        
+
         full_path = os.path.join(folder, f)
         images.append((scene_name, full_path))
-    
+
     return images
+
+
+def scan_all_images_for_readpoint(readpoint_info: 'ReadPointInfo') -> Dict[str, List[Tuple[str, str]]]:
+    """
+    扫描读点的所有图片，建立按时间戳索引的字典
+
+    返回: {时间戳: [(场景名, 路径), ...]}
+
+    目录结构：
+    {读点文件夹}/
+        image/
+            {时间戳1}/
+                Dark_0_{时间戳1}.png
+                Dark2_0_{时间戳1}.png
+            {时间戳2}/
+                Dark_0_{时间戳2}.png
+                ...
+    """
+    import re
+    ts_images = {}  # {时间戳: [(场景名, 路径), ...]}
+
+    if not readpoint_info.image_folder or not os.path.isdir(readpoint_info.image_folder):
+        return ts_images
+
+    image_folder = readpoint_info.image_folder
+
+    # 遍历所有时间戳子文件夹
+    for item in os.listdir(image_folder):
+        item_path = os.path.join(image_folder, item)
+
+        if not os.path.isdir(item_path):
+            continue
+
+        # 检查是否包含图片
+        ts = item  # 时间戳就是文件夹名
+
+        # 扫描该时间戳下的所有图片
+        images = []
+        for f in os.listdir(item_path):
+            if not f.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                continue
+
+            # 解析场景名：格式如 Dark_0_20260204012242.png
+            match = re.match(r'([^_]+)_(\d+)_(\d+)\.(png|jpg|jpeg|bmp)', f, re.IGNORECASE)
+            if match:
+                scene_name = match.group(1)
+            else:
+                scene_name = os.path.splitext(f)[0].split('_')[0]
+
+            full_path = os.path.join(item_path, f)
+            images.append((scene_name, full_path))
+
+        if images:
+            ts_images[ts] = images
+
+    return ts_images
 
 
 def get_all_images_by_readpoint(readpoint_info: 'ReadPointInfo', timestamp: str) -> Dict[str, List[Tuple[str, str]]]:
@@ -289,7 +365,7 @@ def detect_mode(path: str) -> tuple:
 
 def scan_project(root_path: str, log_callback=None) -> ProjectScanResult:
     """
-    扫描项目根目录，识别所有读点
+    扫描项目根目录，识别所有读点，并建立图片索引
 
     目录结构：
     HTOL/
@@ -303,7 +379,7 @@ def scan_project(root_path: str, log_callback=None) -> ProjectScanResult:
     └── 1000H/
         └── ...
 
-    返回：ProjectScanResult
+    返回：ProjectScanResult（包含 image_index 图片索引）
     """
     def log(msg):
         if log_callback:
@@ -350,11 +426,19 @@ def scan_project(root_path: str, log_callback=None) -> ProjectScanResult:
                 status_icon = '[OK]' if rp_info.status == 'ok' else '[!]' if rp_info.status == 'warning' else '[X]'
                 log(f"{status_icon} 识别读点: {rp_info.name} ({rp_info.folder_name})")
 
+                # 建立该读点的图片索引
+                if rp_info.image_folder:
+                    ts_images = scan_all_images_for_readpoint(rp_info)
+                    if ts_images:
+                        result.image_index[rp_info.folder_name] = ts_images
+                        log(f"    └── 扫描到 {len(ts_images)} 个时间戳的图片")
+
     # 按读点编号排序
     result.readpoints.sort(key=lambda x: int(re.search(r'\d+', x.name).group())
                           if re.search(r'\d+', x.name) else 0)
 
-    log(f"共识别 {len(result.readpoints)} 个读点")
+    total_images = sum(len(ts_list) for ts_dict in result.image_index.values() for ts_list in ts_dict.values())
+    log(f"共识别 {len(result.readpoints)} 个读点，预建图片索引 {total_images} 张")
 
     return result
 

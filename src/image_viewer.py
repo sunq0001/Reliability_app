@@ -114,6 +114,29 @@ class ImageViewer:
         else:
             self._build_window()
 
+    def show_images_by_readpoint(self, fuse_id, images_by_readpoint):
+        """
+        直接接收按读点分组的图片数据并显示
+
+        参数:
+            fuse_id: FuseID 字符串
+            images_by_readpoint: {读点名: [(场景名, 路径), ...]}
+        """
+        if not images_by_readpoint:
+            messagebox.showinfo("未找到图片", "没有可显示的图片")
+            return
+
+        self._current_fuse_id = fuse_id
+        self._current_ts = None
+        self._images_by_readpoint = images_by_readpoint
+
+        if self._win and self._win.winfo_exists():
+            self._win.lift()
+            self._rebuild_grid()
+            self._update_title()
+        else:
+            self._build_window()
+
     def _group_images_by_readpoint(self, paths):
         """
         将图片路径按读点分组

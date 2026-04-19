@@ -673,93 +673,76 @@ class ReliabilityAnalysisApp:
 
 
     def _open_image_viewer(self, fuse_id, readpoint=None, timestamp=None):
-        """由 ChartViewer 的「查看抓图」按钮触发：显示对应芯片的所有抓图"""
-        # 如果没有独立的抓图扫描结果，尝试从项目扫描结果获取
-        if self._image_scan_result is None:
-            from src.image_scanner import scan_image_root, find_images_for_fuse
-            
-            # 方式1: 从项目扫描结果获取
-            if self._project_scan_result is not None:
-                root_paths = set()
-                for rp in self._project_scan_result.readpoints:
-                    if rp.image_folder:
-                        # image_folder 格式: .../读点文件夹/image/
-                        # 获取上级目录作为抓图根目录
-                        root_paths.add(os.path.dirname(os.path.dirname(rp.image_folder)))
-                
-                if root_paths:
-                    combined_result = {
-                        'readpoints': {},
-                        'global_ts': {},
-                        'stats': {'total_images': 0, 'readpoints_found': []}
-                    }
-                    for root in root_paths:
-                        result = scan_image_root(root)
-                        for rp_name, ts_map in result.get('readpoints', {}).items():
-                            if rp_name not in combined_result['readpoints']:
-                                combined_result['readpoints'][rp_name] = {}
-                            for ts, paths in ts_map.items():
-                                if ts not in combined_result['readpoints'][rp_name]:
-                                    combined_result['readpoints'][rp_name][ts] = []
-                                combined_result['readpoints'][rp_name][ts].extend(paths)
-                        combined_result['stats']['total_images'] += result.get('stats', {}).get('total_images', 0)
-                        combined_result['stats']['readpoints_found'].extend(result.get('stats', {}).get('readpoints_found', []))
-                        for ts, paths in result.get('global_ts', {}).items():
-                            if ts not in combined_result['global_ts']:
-                                combined_result['global_ts'][ts] = []
-                            combined_result['global_ts'][ts].extend(paths)
-                    
-                    self._image_scan_result = combined_result
-                    self.log(f"[抓图] 从项目目录扫描到 {combined_result['stats']['total_images']} 张图片", 'info')
-            
-            # 方式2: 直接从 _project_scan_result 读取图片
-            if self._image_scan_result is None and self._project_scan_result is not None:
-                from src.project_scanner import get_all_images_by_readpoint
-                combined_result = {
-                    'readpoints': {},
-                    'global_ts': {},
-                    'stats': {'total_images': 0, 'readpoints_found': []}
-                }
-                df = getattr(self, '_current_df', None)
-                if df is not None:
-                    time_col = 1 if 1 in df.columns else ('Time' if 'Time' in df.columns else None)
-                    fuse_col = 'FuseID' if 'FuseID' in df.columns else None
-                    
-                    # 找匹配 FuseID 的行
-                    if fuse_col:
-                        matched = df[df[fuse_col].astype(str).str.strip() == str(fuse_id).strip()]
-                        if not matched.empty and time_col:
-                            ts = str(matched.iloc[0][time_col]).strip()
-                            
-                            # 从项目扫描结果直接获取该时间戳的图片
-                            for rp in self._project_scan_result.readpoints:
-                                if rp.image_folder:
-                                    import glob
-                                    pattern = os.path.join(rp.image_folder, f"*{ts}*")
-                                    paths = glob.glob(pattern)
-                                    if paths:
-                                        if rp.folder_name not in combined_result['readpoints']:
-                                            combined_result['readpoints'][rp.folder_name] = {}
-                                        combined_result['readpoints'][rp.folder_name][ts] = paths
-                                        combined_result['global_ts'][ts] = paths
-                                        combined_result['stats']['total_images'] += len(paths)
-                                        combined_result['stats']['readpoints_found'].append(rp.folder_name)
-                            
-                            if combined_result['stats']['total_images'] > 0:
-                                self._image_scan_result = combined_result
-                                self.log(f"[抓图] 直接获取 {combined_result['stats']['total_images']} 张图片", 'info')
-        
-        if self._image_scan_result is None:
-            messagebox.showinfo("提示",
-                "请先在左侧「抓图路径配置」中选择根目录并点击「扫描抓图」\n"
-                "或者加载包含抓图目录的项目文件夹")
+        """
+        抓图查看逻辑（使用预建的图片索引）：
+        1. 根据 FuseID 从 DataFrame 查该芯片所有读点的时间戳
+        2. 从 image_index 索引中直接获取图片路径
+        3. 按读点分组显示
+        """
+        df = getattr(self, '_current_df', None)
+        if df is None or df.empty:
+            messagebox.showinfo("提示", "没有加载数据")
             return
-        
-        # 优先用传入的 timestamp，否则走 FuseID → 时间戳 → 查图 的流程
-        if timestamp:
-            self._image_viewer.show_for_timestamp(timestamp, readpoint, fuse_id)
-        else:
-            self._image_viewer.show_for_fuse(fuse_id, readpoint)
+
+        # 检查是否有图片索引
+        if self._project_scan_result is None or not self._project_scan_result.image_index:
+            messagebox.showinfo("提示", "没有可用的抓图数据\n请加载包含抓图目录的项目")
+            return
+
+        # 找时间戳列
+        time_col = 1 if 1 in df.columns else ('Time' if 'Time' in df.columns else None)
+        fuse_col = 'FuseID' if 'FuseID' in df.columns else None
+
+        if time_col is None or fuse_col is None:
+            messagebox.showinfo("提示", "数据格式不正确，缺少时间戳或FuseID列")
+            return
+
+        # 找该 FuseID 的所有行，获取每个读点的时间戳
+        matched = df[df[fuse_col].astype(str).str.strip() == str(fuse_id).strip()]
+        if matched.empty:
+            messagebox.showinfo("提示", f"未找到 FuseID={fuse_id} 的数据")
+            return
+
+        # 收集每个读点的时间戳
+        rp_timestamps = {}  # {读点文件夹名: 时间戳}
+        for _, row in matched.iterrows():
+            rp_name = str(row['SN']).strip()  # 读点名称，如 168H
+            ts = str(row[time_col]).strip()
+            if ts and ts != 'nan':
+                rp_timestamps[rp_name] = ts
+
+        if not rp_timestamps:
+            messagebox.showinfo("提示", f"FuseID={fuse_id} 没有有效的时间戳")
+            return
+
+        self.log(f"[抓图] FuseID={fuse_id}, 读点数: {len(rp_timestamps)}", 'info')
+
+        # 从预建索引中获取图片
+        images_by_readpoint = {}  # {读点名: [(场景名, 路径), ...]}
+        total_found = 0
+
+        for rp_name, ts in rp_timestamps.items():
+            # 从索引获取图片
+            images = self._project_scan_result.get_images(rp_name, ts)
+            if images:
+                images_by_readpoint[rp_name] = images
+                total_found += len(images)
+
+        if total_found == 0:
+            # 详细提示哪些读点没有找到
+            found_rps = list(images_by_readpoint.keys())
+            missing_rps = [rp for rp in rp_timestamps.keys() if rp not in found_rps]
+            msg = f"FuseID={fuse_id} 的抓图文件不存在\n\n"
+            if missing_rps:
+                msg += f"已尝试读点: {', '.join(missing_rps)}\n"
+            msg += f"已索引时间戳: {list(self._project_scan_result.image_index.keys())}"
+            messagebox.showinfo("未找到图片", msg)
+            return
+
+        self.log(f"[抓图] 找到 {total_found} 张图片", 'info')
+
+        # 显示图片
+        self._image_viewer.show_images_by_readpoint(fuse_id, images_by_readpoint)
 
 
 
