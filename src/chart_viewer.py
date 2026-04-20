@@ -40,6 +40,7 @@ class ChartViewer:
         self._idx = 0            # 当前索引
         self._split_var = tk.StringVar(value='1')
         self._idx_var = tk.StringVar(value="")
+        self._last_items_hash = None  # 记住上一次显示的items列表，用于检测变化
 
         # 底部悬停信息面板引用
         self._info_panel = None  # 已废弃，保留避免引用错误
@@ -81,11 +82,20 @@ class ChartViewer:
             messagebox.showwarning("提示", "先生成图表后再查看")
             return
 
-        if self._win and self._win.winfo_exists():
+        # 计算当前items的哈希值，用于检测是否发生变化
+        import hashlib
+        items_str = '|'.join(sorted(items))
+        items_hash = hashlib.md5(items_str.encode()).hexdigest()[:8]
+
+        # 如果窗口已存在且items未变化，只提升窗口
+        if self._win and self._win.winfo_exists() and items_hash == self._last_items_hash:
             self._win.lift()
             self.show_at(self._idx)
             return
 
+        # items已变化或窗口不存在，关闭旧窗口并重建
+        self.close()
+        self._last_items_hash = items_hash
         self._build_window()
         self.show_at(0)
 

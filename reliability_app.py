@@ -1150,6 +1150,12 @@ class ReliabilityAnalysisApp:
 
     def _get_selected_test_items(self):
         """获取当前选中的测试项列表"""
+        # 优先从 TestItemSelector 获取最新选择（解决引用问题）
+        if self._test_item_selector is not None:
+            selector_selected = self._test_item_selector.selected
+            if selector_selected:
+                return list(selector_selected)
+        # 回退到自身状态
         if not self._selected_test_items:
             return self._all_test_items.copy()
         return list(self._selected_test_items)

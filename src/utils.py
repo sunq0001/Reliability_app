@@ -4,6 +4,7 @@
 
 import re
 import os
+import json
 
 
 def format_ts_for_display(ts):
@@ -50,3 +51,86 @@ def calculate_percentage_change(old_value, new_value):
     if old_value == 0:
         return float('inf') if new_value > 0 else 0.0
     return ((new_value - old_value) / abs(old_value)) * 100.0
+
+
+# ---- 常用项持久化存储（支持多组） ----
+
+def _get_favorite_path():
+    """获取常用项存储路径（放在用户目录下）"""
+    user_dir = os.path.expanduser("~")
+    app_dir = os.path.join(user_dir, ".reliability_app")
+    os.makedirs(app_dir, exist_ok=True)
+    return os.path.join(app_dir, "favorite_items.json")
+
+
+def save_favorite_items(items, group_name="默认"):
+    """
+    保存常用项到持久化存储（支持多组）
+
+    Args:
+        items: list，常用项名称列表
+        group_name: str，组名称（默认为"默认"）
+    """
+    path = _get_favorite_path()
+    # 加载现有数据
+    all_groups = {}
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                all_groups = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            all_groups = {}
+    
+    # 更新指定组
+    all_groups[group_name] = items
+    
+    # 保存
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(all_groups, f, ensure_ascii=False, indent=2)
+
+
+def load_favorite_items(group_name=None):
+    """
+    从持久化存储加载常用项
+
+    Args:
+        group_name: str, 若是None则返回所有组；若是字符串则返回指定组
+
+    Returns:
+        若group_name为None，返回dict {组名: [items]}
+        若group_name为字符串，返回list [items]
+    """
+    path = _get_favorite_path()
+    if not os.path.exists(path):
+        return {} if group_name is None else []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            all_groups = json.load(f)
+        if group_name is None:
+            return all_groups
+        return all_groups.get(group_name, [])
+    except (json.JSONDecodeError, IOError):
+        return {} if group_name is None else []
+
+
+def delete_favorite_group(group_name):
+    """删除指定组的常用项"""
+    path = _get_favorite_path()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            all_groups = json.load(f)
+        if group_name in all_groups:
+            del all_groups[group_name]
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(all_groups, f, ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, IOError):
+        pass
+
+
+def clear_favorite_items():
+    """清除所有保存的常用项"""
+    path = _get_favorite_path()
+    if os.path.exists(path):
+        os.remove(path)
