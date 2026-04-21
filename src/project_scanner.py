@@ -294,9 +294,14 @@ def get_all_images_by_readpoint(readpoint_info: 'ReadPointInfo', timestamp: str)
     return result
 
 
-def scan_readpoint_folder(folder_path: str) -> ReadPointInfo:
+def scan_readpoint_folder(folder_path: str, depth: int = 0, max_depth: int = 20) -> ReadPointInfo:
     """
-    扫描单个读点文件夹
+    扫描单个读点文件夹，支持深层嵌套查找数据文件
+
+    参数:
+        folder_path: 读点文件夹路径
+        depth: 当前递归深度
+        max_depth: 最大递归深度，防止无限递归
 
     返回：ReadPointInfo 对象
     """
@@ -304,7 +309,6 @@ def scan_readpoint_folder(folder_path: str) -> ReadPointInfo:
     readpoint_num = extract_readpoint_number(folder_name)
 
     if readpoint_num is None:
-        # 无法识别的文件夹
         return ReadPointInfo(
             name=folder_name,
             folder_name=folder_name,
@@ -314,8 +318,8 @@ def scan_readpoint_folder(folder_path: str) -> ReadPointInfo:
 
     rp_name = f"RP{readpoint_num}"
 
-    # 查找数据文件
-    data_file = find_data_file(folder_path)
+    # 查找数据文件（包括深层嵌套）
+    data_file = find_data_file_deep(folder_path, max_depth)
 
     # 查找抓图目录
     image_folder = find_image_folder(folder_path)
@@ -344,6 +348,87 @@ def scan_readpoint_folder(folder_path: str) -> ReadPointInfo:
     )
 
 
+def find_data_file_deep(folder_path: str, max_depth: int = 20) -> Optional[str]:
+    """
+    在文件夹及其深层子目录中查找数据文件
+
+    参数:
+        folder_path: 起始文件夹路径
+        max_depth: 最大递归深度
+
+    返回：找到的数据文件路径，或 None
+    """
+    def search_recursive(current_path: str, current_depth: int) -> Optional[str]:
+        if current_depth > max_depth:
+            return None
+
+        # 在当前目录查找数据文件
+        data_file = find_data_file(current_path)
+        if data_file:
+            return data_file
+
+        # 递归搜索所有子目录
+        try:
+            for item in os.listdir(current_path):
+                item_path = os.path.join(current_path, item)
+                if os.path.isdir(item_path):
+                    result = search_recursive(item_path, current_depth + 1)
+                    if result:
+                        return result
+        except PermissionError:
+            pass
+
+        return None
+
+    return search_recursive(folder_path, 0)
+
+
+def find_readpoint_folders_in_tree(root_path: str, log_callback=None) -> List[str]:
+    """
+    从根目录递归遍历，查找所有读点文件夹
+
+    参数:
+        root_path: 根目录路径
+        log_callback: 日志回调函数
+
+    返回：读点文件夹路径列表
+    """
+    readpoint_paths = []
+
+    def scan_recursive(current_path: str, depth: int, max_depth: int = 20):
+        if depth > max_depth:
+            return
+
+        try:
+            items = os.listdir(current_path)
+        except PermissionError:
+            return
+
+        for item in items:
+            item_path = os.path.join(current_path, item)
+
+            if not os.path.isdir(item_path):
+                continue
+
+            # 检查是否匹配读点格式
+            readpoint_num = extract_readpoint_number(item)
+
+            if readpoint_num is not None:
+                # 找到读点文件夹，加入列表
+                readpoint_paths.append(item_path)
+                if log_callback:
+                    log_callback(f"  发现读点: {item} (深度 {depth})")
+
+                # 继续递归扫描此读点文件夹的子目录（可能有更多数据）
+                scan_recursive(item_path, depth + 1, max_depth)
+            else:
+                # 不是读点格式，继续递归扫描
+                scan_recursive(item_path, depth + 1, max_depth)
+
+    scan_recursive(root_path, 0)
+    return readpoint_paths
+
+
 def detect_mode(path: str) -> tuple:
     """
     检测输入路径是根目录还是读点目录
@@ -366,18 +451,20 @@ def detect_mode(path: str) -> tuple:
 def scan_project(root_path: str, log_callback=None) -> ProjectScanResult:
     """
     扫描项目根目录，识别所有读点，并建立图片索引
+    支持深层嵌套目录结构：
+    根目录 → 子文件夹 → ... → 100H → 子文件夹 → ... → 数据文件
 
-    目录结构：
+    目录结构示例：
     HTOL/
     ├── 168H/
     │   ├── data.csv
     │   └── image/
-    │       ├── 20260204/
-    │       └── 20260205/
     ├── 500H/
-    │   └── ...
-    └── 1000H/
-        └── ...
+    │   ├── 子文件夹/
+    │   │   └── 1000H/
+    │   │       └── 深层数据/
+    │   │           └── data.csv
+    └── ...
 
     返回：ProjectScanResult（包含 image_index 图片索引）
     """
@@ -401,24 +488,18 @@ def scan_project(root_path: str, log_callback=None) -> ProjectScanResult:
     log(f"检测模式: {mode}, 扫描路径: {scan_path}")
 
     if mode == 'single':
-        # 直接扫描单个读点目录
+        # 直接扫描单个读点目录（支持深层查找数据）
         rp_info = scan_readpoint_folder(scan_path)
         result.readpoints.append(rp_info)
         log(f"识别读点: {rp_info.name} ({rp_info.folder_name})")
     else:
-        # 扫描根目录下的所有子文件夹
-        try:
-            subfolders = sorted([
-                os.path.join(root_path, d)
-                for d in os.listdir(root_path)
-                if os.path.isdir(os.path.join(root_path, d))
-            ])
-        except PermissionError:
-            log("权限不足，无法读取目录")
-            return result
+        # 从根目录递归扫描所有子目录，查找读点文件夹
+        log("开始递归扫描目录树...")
+        readpoint_paths = find_readpoint_folders_in_tree(root_path, log)
 
-        for subfolder in subfolders:
-            rp_info = scan_readpoint_folder(subfolder)
+        # 处理每个找到的读点
+        for rp_path in readpoint_paths:
+            rp_info = scan_readpoint_folder(rp_path)
 
             # 只添加成功识别的读点
             if rp_info.name.startswith('RP'):
