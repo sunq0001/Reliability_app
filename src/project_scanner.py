@@ -126,6 +126,65 @@ def find_image_folder(folder_path: str) -> Optional[str]:
     return None
 
 
+def find_image_folder_deep(folder_path: str, max_depth: int = 20) -> Optional[str]:
+    """
+    在文件夹及其深层子目录中查找抓图目录
+
+    参数:
+        folder_path: 起始文件夹路径
+        max_depth: 最大递归深度
+
+    返回：找到的图片目录路径，或 None
+    """
+    def has_images(path: str) -> bool:
+        """检查目录是否包含图片文件"""
+        for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+            if glob.glob(os.path.join(path, f'*{ext}')):
+                return True
+        return False
+
+    def has_image_subfolder(path: str) -> bool:
+        """检查是否有图片子目录（时间戳目录）"""
+        try:
+            for item in os.listdir(path):
+                item_path = os.path.join(path, item)
+                if os.path.isdir(item_path) and has_images(item_path):
+                    return True
+        except PermissionError:
+            pass
+        return False
+
+    def search_recursive(current_path: str, current_depth: int) -> Optional[str]:
+        if current_depth > max_depth:
+            return None
+
+        # 检查当前目录是否就是图片目录
+        if has_images(current_path):
+            return current_path
+
+        # 优先查找常见的图片目录名
+        for name in ['image', 'images', 'img', 'photo', 'photos', 'capture', 'captures']:
+            image_path = os.path.join(current_path, name)
+            if os.path.isdir(image_path):
+                if has_images(image_path):
+                    return image_path
+
+        # 递归搜索所有子目录
+        try:
+            for item in os.listdir(current_path):
+                item_path = os.path.join(current_path, item)
+                if os.path.isdir(item_path):
+                    result = search_recursive(item_path, current_depth + 1)
+                    if result:
+                        return result
+        except PermissionError:
+            pass
+
+        return None
+
+    return search_recursive(folder_path, 0)
+
+
 def scan_image_timestamps(image_folder: str) -> List[str]:
     """扫描抓图目录下的所有时间戳子文件夹"""
     timestamps = []
@@ -322,7 +381,7 @@ def scan_readpoint_folder(folder_path: str, depth: int = 0, max_depth: int = 20)
     data_file = find_data_file_deep(folder_path, max_depth)
 
     # 查找抓图目录
-    image_folder = find_image_folder(folder_path)
+    image_folder = find_image_folder_deep(folder_path)
     timestamps = []
 
     if image_folder:
