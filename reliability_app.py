@@ -788,8 +788,7 @@ class ReliabilityAnalysisApp:
         def worker():
             # 使用新的带目录树的扫描
             result, tree_output = scan_project_with_tree(root, log_callback=lambda msg: self.log(msg, 'info'))
-            # 显示目录树分析结果
-            self.root.after(0, lambda: self._show_analysis_result(tree_output, result))
+            self.root.after(0, lambda: self._on_project_scan_done(result))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -801,41 +800,6 @@ class ReliabilityAnalysisApp:
 
         self._project_path_var.set(folder)
         self._do_project_scan()
-
-    def _show_analysis_result(self, tree_output: str, result: ProjectScanResult):
-        """显示目录树分析结果，然后继续正常流程"""
-        # 弹出分析结果窗口
-        self._show_tree_window(tree_output)
-        # 继续原有流程
-        self._on_project_scan_done(result)
-
-    def _show_tree_window(self, tree_output: str):
-        """显示目录树分析结果的弹窗"""
-        win = tk.Toplevel(self.root)
-        win.title("📁 目录结构分析")
-        win.geometry("800x600")
-
-        # 文本区域
-        text_frame = tk.Frame(win)
-        text_frame.pack(fill='both', expand=True, padx=10, pady=10)
-
-        scrollbar = tk.Scrollbar(text_frame)
-        scrollbar.pack(side='right', fill='y')
-
-        text_widget = tk.Text(text_frame, wrap='none', font=('Consolas', 9),
-                             yscrollcommand=scrollbar.set)
-        text_widget.pack(side='left', fill='both', expand=True)
-        scrollbar.config(command=text_widget.yview)
-
-        text_widget.insert('1.0', tree_output)
-        text_widget.config(state='disabled')  # 只读
-
-        # 关闭按钮
-        btn_frame = tk.Frame(win)
-        btn_frame.pack(fill='x', padx=10, pady=(0, 10))
-        tk.Button(btn_frame, text="关闭", command=win.destroy,
-                 bg='#2d4a6e', fg='white', font=('Microsoft YaHei', 10),
-                 padx=20, pady=5).pack(side='right')
 
     def _on_project_scan_done(self, result: ProjectScanResult):
         """扫描完成回调：自动填充时间读点配置"""

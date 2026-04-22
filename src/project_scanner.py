@@ -746,30 +746,36 @@ def analyze_readpoint_detail(rp_info: 'ReadPointInfo', log_callback=None) -> str
 
 def scan_project_with_tree(root_path: str, log_callback=None) -> tuple:
     """
-    扫描项目并返回(结果, 目录树字符串)
+    扫描项目并输出目录树到日志
 
     返回: (ProjectScanResult, directory_tree_str)
     """
-    # 构建目录树
+    # 构建目录树并输出到日志
     tree_str = build_directory_tree(root_path, log_callback)
+    
+    # 输出到日志（每行单独输出）
+    if log_callback:
+        for line in tree_str.split('\n'):
+            log_callback(line)
 
     # 执行标准扫描
     result = scan_project(root_path, log_callback)
 
-    # 生成每个读点的详细分析
-    detail_lines = [tree_str]
-    detail_lines.append(f"\n{'='*60}")
-    detail_lines.append("🔍 读点详细分析")
-    detail_lines.append(f"{'='*60}")
+    # 生成每个读点的详细分析并输出到日志
+    if log_callback:
+        log_callback(f"\n{'='*60}")
+        log_callback("🔍 读点详细分析")
+        log_callback(f"{'='*60}")
 
-    for rp in result.readpoints:
-        detail_lines.append(analyze_readpoint_detail(rp, log_callback))
+        for rp in result.readpoints:
+            for line in analyze_readpoint_detail(rp, log_callback).split('\n'):
+                log_callback(line)
 
-    detail_lines.append(f"\n{'='*60}")
-    detail_lines.append(f"扫描完成！共识别 {len(result.readpoints)} 个读点")
-    detail_lines.append(f"{'='*60}\n")
+        log_callback(f"\n{'='*60}")
+        log_callback(f"扫描完成！共识别 {len(result.readpoints)} 个读点")
+        log_callback(f"{'='*60}\n")
 
-    return result, "\n".join(detail_lines)
+    return result, tree_str
 
 
 # ========== 测试 ==========
