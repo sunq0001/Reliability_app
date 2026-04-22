@@ -849,14 +849,13 @@ class ReliabilityAnalysisApp:
                 image_name
             ))
             
-            # 日志中详细显示每个读点的时间戳列表
-            if rp.image_timestamps:
-                self.log(f"  {rp.name}: {rp.image_folder}", 'info')
-                for i, ts in enumerate(rp.image_timestamps[:10]):  # 最多显示10个
-                    formatted_ts = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]} {ts[8:10]}:{ts[10:12]}:{ts[12:14]}" if len(ts) >= 14 else ts
-                    self.log(f"    [{i+1}] {formatted_ts}", 'info')
-                if len(rp.image_timestamps) > 10:
-                    self.log(f"    ... 共 {len(rp.image_timestamps)} 个时间戳", 'info')
+            # 日志中显示该读点下所有图片文件
+            if rp.all_images:
+                self.log(f"  {rp.name}: {len(rp.all_images)}张图片", 'info')
+                for img_path in rp.all_images[:10]:  # 最多显示10个
+                    self.log(f"    {img_path}", 'info')
+                if len(rp.all_images) > 10:
+                    self.log(f"    ... 等共 {len(rp.all_images)} 个文件", 'info')
 
         # 记录到日志
         mode_desc = "根目录扫描" if result.mode == 'auto' else "直接读点"

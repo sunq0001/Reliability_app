@@ -22,6 +22,7 @@ class ReadPointInfo:
     data_file: Optional[str] = None      # 数据文件路径
     image_folder: Optional[str] = None   # 抓图目录路径
     image_timestamps: List[str] = field(default_factory=list)  # 时间戳列表
+    all_images: List[str] = field(default_factory=list)  # 所有图片文件路径列表
     status: str = 'pending'  # pending | ok | warning | error
 
     @property
@@ -30,7 +31,7 @@ class ReadPointInfo:
 
     @property
     def has_images(self) -> bool:
-        return self.image_folder is not None
+        return len(self.all_images) > 0
 
     @property
     def is_complete(self) -> bool:
@@ -252,7 +253,39 @@ def get_images_for_timestamp(image_folder: str, timestamp: str) -> List[Tuple[st
         full_path = os.path.join(folder, f)
         images.append((scene_name, full_path))
 
+
     return images
+
+
+def collect_all_images_for_readpoint(folder_path: str, max_depth: int = 20) -> List[str]:
+    """
+    递归收集读点文件夹下的所有图片文件路径
+
+    参数:
+        folder_path: 读点文件夹路径
+        max_depth: 最大递归深度
+
+    返回: 所有图片文件的绝对路径列表
+    """
+    all_images = []
+    exts = ['.png', '.jpg', '.jpeg', '.bmp']
+
+    def scan_recursive(current_path: str, depth: int):
+        if depth > max_depth:
+            return
+        try:
+            for item in os.listdir(current_path):
+                item_path = os.path.join(current_path, item)
+                if os.path.isfile(item_path):
+                    if any(item.lower().endswith(ext) for ext in exts):
+                        all_images.append(item_path)
+                elif os.path.isdir(item_path):
+                    scan_recursive(item_path, depth + 1)
+        except PermissionError:
+            pass
+
+    scan_recursive(folder_path, 0)
+    return all_images
 
 
 def scan_all_images_for_readpoint(readpoint_info: 'ReadPointInfo') -> Dict[str, List[Tuple[str, str]]]:
@@ -566,12 +599,18 @@ def scan_project(root_path: str, log_callback=None) -> ProjectScanResult:
                 status_icon = '[OK]' if rp_info.status == 'ok' else '[!]' if rp_info.status == 'warning' else '[X]'
                 log(f"{status_icon} 识别读点: {rp_info.name} ({rp_info.folder_name})")
 
-                # 建立该读点的图片索引
+                # 收集该读点下的所有图片文件路径
+                all_imgs = collect_all_images_for_readpoint(rp_info.folder_path)
+                rp_info.all_images = all_imgs
+
+                # 建立该读点的图片索引（按时间戳分组）
                 if rp_info.image_folder:
                     ts_images = scan_all_images_for_readpoint(rp_info)
                     if ts_images:
                         result.image_index[rp_info.folder_name] = ts_images
-                        log(f"    └── 扫描到 {len(ts_images)} 个时间戳的图片")
+                        ts_count = len(ts_images)
+                        img_count = sum(len(imgs) for imgs in ts_images.values())
+                        log(f"    └── {ts_count}个时间戳, {img_count}张图片")
 
     # 按读点编号排序
     result.readpoints.sort(key=lambda x: int(re.search(r'\d+', x.name).group())
@@ -699,47 +738,18 @@ def analyze_readpoint_detail(rp_info: 'ReadPointInfo', log_callback=None) -> str
 
     # 数据文件
     if rp_info.data_file:
-        lines.append(f"\n  📊 数据文件:")
-        lines.append(f"     {os.path.basename(rp_info.data_file)}")
-        lines.append(f"     完整路径: {rp_info.data_file}")
+        lines.append(f"\n  📊 数据文件: {os.path.basename(rp_info.data_file)}")
+        lines.append(f"     {rp_info.data_file}")
     else:
         lines.append(f"\n  📊 数据文件: 未找到 ✗")
 
-    # 抓图目录
-    if rp_info.image_folder:
-        lines.append(f"\n  🖼️ 抓图目录:")
-        lines.append(f"     {rp_info.image_folder}")
-
-        # 扫描图片文件
-        img_files = []
-        for root, _, files in os.walk(rp_info.image_folder):
-            for f in files:
-                if f.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
-                    img_files.append(os.path.join(root, f))
-
-        if img_files:
-            lines.append(f"     共 {len(img_files)} 个图片文件:")
-            # 按时间戳分组显示
-            ts_groups = {}
-            for img_path in sorted(img_files):
-                ts_match = re.search(r'(\d{14})', img_path)
-                ts = ts_match.group(1) if ts_match else '_no_ts_'
-                if ts not in ts_groups:
-                    ts_groups[ts] = []
-                ts_groups[ts].append(os.path.basename(img_path))
-
-            for ts, files in sorted(ts_groups.items()):
-                if ts == '_no_ts_':
-                    lines.append(f"       [无时间戳]: {', '.join(files[:5])}")
-                    if len(files) > 5:
-                        lines.append(f"                    ... 共 {len(files)} 个")
-                else:
-                    formatted_ts = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]} {ts[8:10]}:{ts[10:12]}:{ts[12:14]}"
-                    lines.append(f"       [{formatted_ts}]: {', '.join(files)}")
-        else:
-            lines.append(f"     未找到图片文件 ✗")
+    # 图片文件列表
+    if rp_info.all_images:
+        lines.append(f"\n  🖼️ 图片文件 ({len(rp_info.all_images)}个):")
+        for img_path in rp_info.all_images:
+            lines.append(f"     {img_path}")
     else:
-        lines.append(f"\n  🖼️ 抓图目录: 未找到 ✗")
+        lines.append(f"\n  🖼️ 图片文件: 未找到 ✗")
 
     return "\n".join(lines)
 
