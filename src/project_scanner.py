@@ -583,16 +583,199 @@ def scan_project(root_path: str, log_callback=None) -> ProjectScanResult:
     return result
 
 
+def build_directory_tree(root_path: str, log_callback=None, max_depth: int = 20) -> str:
+    """
+    构建完整的目录树并返回树形字符串
+
+    参数:
+        root_path: 根目录路径
+        log_callback: 日志回调函数
+        max_depth: 最大显示深度
+
+    返回: 目录树字符串
+    """
+    lines = []
+    lines.append(f"\n{'='*60}")
+    lines.append(f"📁 目录树分析: {root_path}")
+    lines.append(f"{'='*60}\n")
+
+    readpoint_nums = set()  # 用于记录所有读点编号
+
+    def is_readpoint_folder(name: str) -> bool:
+        """判断文件夹是否为读点"""
+        return extract_readpoint_number(name) is not None
+
+    def get_readpoint_label(name: str) -> str:
+        """获取读点标签"""
+        num = extract_readpoint_number(name)
+        if num:
+            return f" [RP{num}]"
+        return ""
+
+    def scan_tree(path: str, prefix: str = "", depth: int = 0):
+        if depth > max_depth:
+            return
+
+        try:
+            items = sorted(os.listdir(path))
+        except PermissionError:
+            lines.append(f"{prefix}└── [权限拒绝]")
+            return
+        except Exception as e:
+            lines.append(f"{prefix}└── [错误: {e}]")
+            return
+
+        # 分离文件夹和文件
+        dirs = [i for i in items if os.path.isdir(os.path.join(path, i))]
+        files = [i for i in items if os.path.isfile(os.path.join(path, i))]
+
+        all_items = [(d, True) for d in dirs] + [(f, False) for f in files]
+
+        for i, (name, is_dir) in enumerate(all_items):
+            is_last = (i == len(all_items) - 1)
+            connector = "└── " if is_last else "├── "
+
+            full_path = os.path.join(path, name)
+
+            if is_dir:
+                rp_label = get_readpoint_label(name)
+                # 检查是否包含数据文件或图片
+                has_data = bool(find_data_file(full_path) or find_data_file_deep(full_path, 5))
+                has_imgs = bool(find_image_folder_deep(full_path, 5))
+
+                extra_info = []
+                if rp_label:
+                    extra_info.append("📍读点")
+                if has_data:
+                    extra_info.append("📊数据")
+                if has_imgs:
+                    extra_info.append("🖼️图片")
+                extra_str = f" ({', '.join(extra_info)})" if extra_info else ""
+
+                lines.append(f"{prefix}{connector}📂 {name}{rp_label}{extra_str}")
+
+                # 递归处理子目录
+                new_prefix = prefix + ("    " if is_last else "│   ")
+                scan_tree(full_path, new_prefix, depth + 1)
+            else:
+                # 检查是否为数据文件或图片
+                ext = os.path.splitext(name)[1].lower()
+                icon = "📊" if ext in ['.csv', '.xlsx', '.xls'] else ("🖼️" if ext in ['.png', '.jpg', '.jpeg', '.bmp'] else "📄")
+                lines.append(f"{prefix}{connector}{icon} {name}")
+
+    scan_tree(root_path)
+
+    # 统计信息
+    lines.append(f"\n{'='*60}")
+    lines.append("📊 统计摘要:")
+    lines.append(f"{'='*60}")
+
+    # 统计读点
+    readpoint_count = 0
+    for root, dirs, files in os.walk(root_path):
+        for d in dirs:
+            if is_readpoint_folder(d):
+                readpoint_count += 1
+                break  # 每个读点只计算一次
+
+    lines.append(f"  读点数量: {readpoint_count}")
+
+    return "\n".join(lines)
+
+
+def analyze_readpoint_detail(rp_info: 'ReadPointInfo', log_callback=None) -> str:
+    """
+    详细分析单个读点的内容
+
+    返回: 分析报告字符串
+    """
+    lines = []
+    lines.append(f"\n{'─'*50}")
+    lines.append(f"📍 读点: {rp_info.name} ({rp_info.folder_name})")
+    lines.append(f"{'─'*50}")
+
+    # 文件夹路径
+    lines.append(f"  📂 路径: {rp_info.folder_path}")
+
+    # 数据文件
+    if rp_info.data_file:
+        lines.append(f"\n  📊 数据文件:")
+        lines.append(f"     {os.path.basename(rp_info.data_file)}")
+        lines.append(f"     完整路径: {rp_info.data_file}")
+    else:
+        lines.append(f"\n  📊 数据文件: 未找到 ✗")
+
+    # 抓图目录
+    if rp_info.image_folder:
+        lines.append(f"\n  🖼️ 抓图目录:")
+        lines.append(f"     {rp_info.image_folder}")
+
+        # 扫描图片文件
+        img_files = []
+        for root, _, files in os.walk(rp_info.image_folder):
+            for f in files:
+                if f.endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                    img_files.append(os.path.join(root, f))
+
+        if img_files:
+            lines.append(f"     共 {len(img_files)} 个图片文件:")
+            # 按时间戳分组显示
+            ts_groups = {}
+            for img_path in sorted(img_files):
+                ts_match = re.search(r'(\d{14})', img_path)
+                ts = ts_match.group(1) if ts_match else '_no_ts_'
+                if ts not in ts_groups:
+                    ts_groups[ts] = []
+                ts_groups[ts].append(os.path.basename(img_path))
+
+            for ts, files in sorted(ts_groups.items()):
+                if ts == '_no_ts_':
+                    lines.append(f"       [无时间戳]: {', '.join(files[:5])}")
+                    if len(files) > 5:
+                        lines.append(f"                    ... 共 {len(files)} 个")
+                else:
+                    formatted_ts = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]} {ts[8:10]}:{ts[10:12]}:{ts[12:14]}"
+                    lines.append(f"       [{formatted_ts}]: {', '.join(files)}")
+        else:
+            lines.append(f"     未找到图片文件 ✗")
+    else:
+        lines.append(f"\n  🖼️ 抓图目录: 未找到 ✗")
+
+    return "\n".join(lines)
+
+
+def scan_project_with_tree(root_path: str, log_callback=None) -> tuple:
+    """
+    扫描项目并返回(结果, 目录树字符串)
+
+    返回: (ProjectScanResult, directory_tree_str)
+    """
+    # 构建目录树
+    tree_str = build_directory_tree(root_path, log_callback)
+
+    # 执行标准扫描
+    result = scan_project(root_path, log_callback)
+
+    # 生成每个读点的详细分析
+    detail_lines = [tree_str]
+    detail_lines.append(f"\n{'='*60}")
+    detail_lines.append("🔍 读点详细分析")
+    detail_lines.append(f"{'='*60}")
+
+    for rp in result.readpoints:
+        detail_lines.append(analyze_readpoint_detail(rp, log_callback))
+
+    detail_lines.append(f"\n{'='*60}")
+    detail_lines.append(f"扫描完成！共识别 {len(result.readpoints)} 个读点")
+    detail_lines.append(f"{'='*60}\n")
+
+    return result, "\n".join(detail_lines)
+
+
 # ========== 测试 ==========
 if __name__ == '__main__':
     # 测试扫描
     test_path = r"C:\Users\mss\Desktop\168H\HTOL"
-    result = scan_project(test_path, print)
+    result, tree_output = scan_project_with_tree(test_path, print)
 
-    print("\n扫描结果:")
-    for rp in result.readpoints:
-        print(f"\n  {rp.name} ({rp.folder_name})")
-        print(f"    数据: {rp.data_file}")
-        print(f"    抓图: {rp.image_folder}")
-        print(f"    时间戳: {rp.image_timestamps[:3]}...")
-        print(f"    状态: {rp.status}")
+    print(tree_output)
