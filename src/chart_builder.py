@@ -194,6 +194,10 @@ class ChartInteractor:
         self.last_fuse_id = None
         self.last_hover_point = None  # 缓存上次悬停的点，避免重复绘制
         
+        # 新增：点击选中状态（持久高亮）
+        self._selected_point = None  # 当前选中的点（点击选中，保持高亮）
+        self._selected_fuse_id = None  # 当前选中的FuseID
+        
         # 节流相关
         self._last_move_time = 0
         self._move_threshold_ms = 16  # ~60fps
@@ -455,6 +459,13 @@ class ChartInteractor:
     
     def _handle_hover(self, event, point):
         """处理悬停在数据点上的情况"""
+        # 如果该点已被选中，保持选中状态不变
+        if self._selected_point == point:
+            if self.set_cursor:
+                self.set_cursor(True)
+            self.last_hover_point = point
+            return
+        
         # 更新光标为手型
         if self.set_cursor:
             self.set_cursor(True)
@@ -481,6 +492,30 @@ class ChartInteractor:
         if self.set_cursor:
             self.set_cursor(False)
         
+        # 如果有选中点，保留选中高亮，只清除临时悬停高亮
+        if self._selected_point is not None:
+            # 清除临时高亮（current_highlight），但保留选中高亮
+            if self.current_highlight:
+                try:
+                    self.current_highlight.remove()
+                except Exception:
+                    pass
+                self.current_highlight = None
+            # 清除交叉线（临时）
+            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines]
+            for line in lines_to_remove:
+                try:
+                    line.remove()
+                except Exception:
+                    pass
+                if line in self.drift_lines:
+                    self.drift_lines.remove(line)
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+            return
+        
         # 如果之前没有悬停任何点，直接返回
         if self.last_hover_point is None and self.last_fuse_id is None:
             return
@@ -498,6 +533,30 @@ class ChartInteractor:
         """处理鼠标离开图表区域的情况"""
         if self.set_cursor:
             self.set_cursor(False)
+        
+        # 如果有选中点，保留选中高亮
+        if self._selected_point is not None:
+            # 清除临时高亮，保留选中
+            if self.current_highlight:
+                try:
+                    self.current_highlight.remove()
+                except Exception:
+                    pass
+                self.current_highlight = None
+            # 清除交叉线（临时）
+            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines]
+            for line in lines_to_remove:
+                try:
+                    line.remove()
+                except Exception:
+                    pass
+                if line in self.drift_lines:
+                    self.drift_lines.remove(line)
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+            return
         
         # 如果之前没有悬停任何点，直接返回
         if self.last_hover_point is None and self.last_fuse_id is None:
@@ -566,20 +625,33 @@ class ChartInteractor:
     # ========== 框选功能 ==========
     
     def on_mouse_press(self, event):
-        """鼠标按下：开始框选（如果有之前的框选，先清除）"""
+        """鼠标按下：点击选中点或开始框选"""
         if event.button != 1:  # 只响应左键
             return
         if event.inaxes != self.ax:
+            return
+        if event.xdata is None or event.ydata is None:
             return
         
         # 如果有之前的框选虚线，先清除（点击清除）
         if self.selection_lines:
             self.clear_selection()
             return  # 点击清除后不开始新框选
-        if event.xdata is None or event.ydata is None:
+        
+        # 查找点击位置附近是否有数据点
+        point = self.find_nearest_point(event.xdata, event.ydata)
+        
+        if point is not None:
+            # 点击选中了一个数据点（持久高亮）
+            self._select_point(point)
             return
         
-        # 开始拖动
+        # 点击在空白处：清除选中状态
+        if self._selected_point is not None:
+            self._clear_selection()
+            return
+        
+        # 开始拖动（框选）
         self.is_dragging = True
         self.selection_start = (event.xdata, event.ydata)
         self._drag_end = (event.xdata, event.ydata)  # 初始化拖动终点
@@ -589,6 +661,77 @@ class ChartInteractor:
         
         # 绘制选择框起点
         self.draw_selection_rect()
+    
+    def _select_point(self, point):
+        """选中一个数据点（持久高亮）"""
+        # 如果选中的是同一个点，取消选中
+        if self._selected_point == point:
+            self._clear_selection()
+            return
+        
+        # 清除之前的选中
+        self._clear_selection_graphics()
+        
+        # 设置新的选中点
+        self._selected_point = point
+        self._selected_fuse_id = point.fuse_id
+        
+        # 绘制选中高亮（用更大的样式区别于悬停）
+        self.current_highlight = self.ax.plot(
+            point.x, point.y,
+            marker=self.highlight_style['marker'],
+            color=self.highlight_style['color'],
+            markersize=self.highlight_style['markersize'] + 2,  # 稍大一点
+            zorder=self.highlight_style['zorder'] + 1
+        )[0]
+        self.drift_lines.append(self.current_highlight)
+        
+        # 绘制选中点的交叉线
+        self.draw_cross_lines(point.fuse_id, point.x, point.y, point.label)
+        
+        # 更新shared_state
+        self.update_shared_state(point)
+        
+        self.canvas.draw_idle()
+    
+    def _clear_selection(self):
+        """清除选中状态"""
+        self._selected_point = None
+        self._selected_fuse_id = None
+        self._clear_selection_graphics()
+        self.clear_shared_state()
+        self.get_info_text('将鼠标移到图表数据点上查看详情', is_active=False)
+        self.set_linked('')
+        self.canvas.draw_idle()
+    
+    def _clear_selection_graphics(self):
+        """清除选中状态的图形（不清除悬停的临时高亮）"""
+        # 清除选中相关图形（高亮和交叉线），但保留框选线
+        # 从 drift_lines 中移除高亮和交叉线（保留框选线通过 selection_lines）
+        if self.current_highlight:
+            try:
+                self.current_highlight.remove()
+            except Exception:
+                pass
+            self.current_highlight = None
+        
+        # 清除交叉线（它们在 drift_lines 中但不在 selection_lines 中）
+        lines_to_remove = []
+        for line in self.drift_lines:
+            if line not in self.selection_lines:
+                lines_to_remove.append(line)
+        for line in lines_to_remove:
+            try:
+                line.remove()
+            except Exception:
+                pass
+            if line in self.drift_lines:
+                self.drift_lines.remove(line)
+        
+        try:
+            self.canvas.draw_idle()
+        except Exception:
+            pass
     
     def on_mouse_drag(self, event):
         """鼠标拖动：更新框选矩形（带节流优化）"""
@@ -787,6 +930,9 @@ class ChartInteractor:
         
         # 清除框选产生的虚线
         self._clear_selection_lines()
+        
+        # 清除点击选中状态
+        self._clear_selection()
         
         # 重置状态
         self.is_dragging = False
