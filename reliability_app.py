@@ -829,13 +829,34 @@ class ReliabilityAnalysisApp:
 
             # 填充右侧信息表格
             data_basename = os.path.basename(rp.data_file) if rp.data_file else '-'
-            image_name = os.path.basename(rp.image_folder) if rp.image_folder else '-'
+            
+            # 抓图目录显示：完整路径 + 时间戳数量
+            if rp.image_folder:
+                ts_count = len(rp.image_timestamps) if rp.image_timestamps else 0
+                # 显示相对路径（相对于项目根目录）
+                try:
+                    rel_path = os.path.relpath(rp.image_folder, result.root_path)
+                except ValueError:
+                    rel_path = os.path.basename(rp.image_folder)
+                image_name = f"{rel_path} ({ts_count}个时间戳)"
+            else:
+                image_name = '-'
+            
             self._info_tree.insert('', 'end', values=(
                 rp.name,
                 rp.folder_name,
                 data_basename,
                 image_name
             ))
+            
+            # 日志中详细显示每个读点的时间戳列表
+            if rp.image_timestamps:
+                self.log(f"  {rp.name}: {rp.image_folder}", 'info')
+                for i, ts in enumerate(rp.image_timestamps[:10]):  # 最多显示10个
+                    formatted_ts = f"{ts[0:4]}-{ts[4:6]}-{ts[6:8]} {ts[8:10]}:{ts[10:12]}:{ts[12:14]}" if len(ts) >= 14 else ts
+                    self.log(f"    [{i+1}] {formatted_ts}", 'info')
+                if len(rp.image_timestamps) > 10:
+                    self.log(f"    ... 共 {len(rp.image_timestamps)} 个时间戳", 'info')
 
         # 记录到日志
         mode_desc = "根目录扫描" if result.mode == 'auto' else "直接读点"

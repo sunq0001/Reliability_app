@@ -137,19 +137,19 @@ def find_image_folder_deep(folder_path: str, max_depth: int = 20) -> Optional[st
     返回：找到的图片目录路径，或 None
     """
     def has_images(path: str) -> bool:
-        """检查目录是否包含图片文件"""
+        """检查目录是否包含图片文件（直接文件或子目录中的图片）"""
+        # 检查直接图片文件
         for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
             if glob.glob(os.path.join(path, f'*{ext}')):
                 return True
-        return False
-
-    def has_image_subfolder(path: str) -> bool:
-        """检查是否有图片子目录（时间戳目录）"""
+        # 检查是否有包含图片的子目录（时间戳文件夹）
         try:
             for item in os.listdir(path):
                 item_path = os.path.join(path, item)
-                if os.path.isdir(item_path) and has_images(item_path):
-                    return True
+                if os.path.isdir(item_path):
+                    for ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+                        if glob.glob(os.path.join(item_path, f'*{ext}')):
+                            return True
         except PermissionError:
             pass
         return False
