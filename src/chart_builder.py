@@ -149,6 +149,9 @@ def build_chart_for_item(df, test_item):
     fig._data_points = all_points
     fig._lines_info = all_lines  # 保留线条信息用于绘制交叉线
     
+    # 保存读点到颜色映射
+    fig._rp_colors = {str(rp): colors[i % len(colors)] for i, rp in enumerate(read_points)}
+    
     return fig, ax
 
 
@@ -516,18 +519,41 @@ class ChartInteractor:
                 pass
             return
         
+        # 如果之前有悬停的点，保持显示其数据
+        if self.last_hover_point is not None:
+            if self.set_cursor:
+                self.set_cursor(False)
+            # 清除临时高亮
+            if self.current_highlight:
+                try:
+                    self.current_highlight.remove()
+                except Exception:
+                    pass
+                self.current_highlight = None
+            # 清除交叉线（临时）
+            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines]
+            for line in lines_to_remove:
+                try:
+                    line.remove()
+                except Exception:
+                    pass
+                if line in self.drift_lines:
+                    self.drift_lines.remove(line)
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+            return
+        
         # 如果之前没有悬停任何点，直接返回
-        if self.last_hover_point is None and self.last_fuse_id is None:
+        if self.last_fuse_id is None:
             return
         
         self.clear_all_highlights()
         self.get_info_text('将鼠标移到图表数据点上查看详情', is_active=False)
         self.set_linked('')
-        
-        self.last_hover_point = None
-        if self.last_fuse_id is not None:
-            self.clear_shared_state()
-            self.last_fuse_id = None
+        self.clear_shared_state()
+        self.last_fuse_id = None
     
     def _handle_mouse_leave(self):
         """处理鼠标离开图表区域的情况"""
@@ -558,18 +584,39 @@ class ChartInteractor:
                 pass
             return
         
+        # 如果之前有悬停的点，保持显示其数据
+        if self.last_hover_point is not None:
+            # 清除临时高亮
+            if self.current_highlight:
+                try:
+                    self.current_highlight.remove()
+                except Exception:
+                    pass
+                self.current_highlight = None
+            # 清除交叉线（临时）
+            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines]
+            for line in lines_to_remove:
+                try:
+                    line.remove()
+                except Exception:
+                    pass
+                if line in self.drift_lines:
+                    self.drift_lines.remove(line)
+            try:
+                self.canvas.draw_idle()
+            except Exception:
+                pass
+            return
+        
         # 如果之前没有悬停任何点，直接返回
-        if self.last_hover_point is None and self.last_fuse_id is None:
+        if self.last_fuse_id is None:
             return
         
         self.clear_all_highlights()
         self.get_info_text('将鼠标移到图表数据点上查看详情', is_active=False)
         self.set_linked('')
-        
-        self.last_hover_point = None
-        if self.last_fuse_id is not None:
-            self.clear_shared_state()
-            self.last_fuse_id = None
+        self.clear_shared_state()
+        self.last_fuse_id = None
     
     def highlight_linked(self, fuse_id):
         """
