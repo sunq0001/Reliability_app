@@ -1,4 +1,4 @@
-"""
+﻿"""
 图表查看器模块 - 封装图表弹窗的所有状态和逻辑
 """
 import tkinter as tk
@@ -60,6 +60,7 @@ class ChartViewer:
         self._tooltip_win = None
         # 数据点详情弹窗引用
         self._data_point_win = None
+        self._table_rows = {}  # 保存表格行数据用于点击操作
         # 联动信息缓存
         self._linked_info = {}
         # 右键菜单信息（悬停时记录，用于右键菜单）
@@ -439,25 +440,46 @@ class ChartViewer:
 
         canvas._on_fuse_highlight = _track_fuse
 
-        # 鼠标离开数据点时恢复光标，但保留最后的数据（不清空详情面板）
+        # 鼠标离开数据点时恢复光标，保留高亮和数据不变
         def _clear_fuse():
             _set_cursor(False)
-            # 不再清空 _last_fuse_id，保留最后悬停的数据
-            # 只清空当前的hover状态
-            self._last_readpoint   = None
-            self._last_timestamp   = None
-            self._last_test_value  = None
-            # 保留 _last_fuse_id 和 _last_test_item，以便显示最后的数据
-            # 不调用 _update_dialog_info()，保持最后显示的数据不变
-            # 清除其他图表的高亮（排除当前canvas）
-            ss = getattr(canvas, '_shared_state', {})
-            for canvas_item in ss.get('canvases', []):
-                if len(canvas_item) >= 4:
-                    _, other_canvas, _, highlight_fn = canvas_item[:4]
-                    if other_canvas is not canvas and highlight_fn:
-                        highlight_fn(None)  # 传入 None 清除高亮
+            # 不清空任何数据，保留最后悬停的数据和所有高亮
+            # 这样鼠标移走时信息和高亮都不消失
 
         canvas._on_fuse_clear = _clear_fuse
+
+        # ---- 点击空白处清除高亮 ----
+        def _on_click_clear_highlight(event):
+            """点击空白处时清除高亮"""
+            if interactor:
+                # 检查是否点击在数据点上
+                if event.inaxes == ax and event.xdata is not None and event.ydata is not None:
+                    nearest = interactor.find_nearest_point(event.xdata, event.ydata)
+                    if nearest is not None:
+                        return  # 点击在数据点上，不清除
+
+                # 点击在空白处，清除高亮
+                interactor.clear_all_highlights()
+
+                # 清除其他图表的高亮
+                ss = getattr(canvas, '_shared_state', {})
+                for canvas_item in ss.get('canvases', []):
+                    if len(canvas_item) >= 5:
+                        _, other_canvas, _, highlight_fn, other_interactor = canvas_item[:5]
+                        if other_canvas is not canvas:
+                            if highlight_fn:
+                                highlight_fn(None)
+                            if other_interactor and hasattr(other_interactor, 'clear_all_highlights'):
+                                other_interactor.clear_all_highlights()
+
+                # 清空悬停信息
+                self._last_fuse_id = None
+                self._last_readpoint = None
+                self._last_timestamp = None
+                self._last_test_value = None
+                self._update_dialog_info()
+
+        canvas.mpl_connect('button_press_event', _on_click_clear_highlight)
 
     def _bind_click(self, ax, canvas, test_item):
         """绑定点击事件：点击数据点直接显示四张图片"""
@@ -640,6 +662,14 @@ class ChartViewer:
     def _open_image_viewer_from_tooltip(self, fuse_id, readpoint):
         """从 tooltip 弹出的查看图像"""
         self._close_tooltip()
+        cb = self._cb.get('open_image_viewer')
+        if cb:
+            cb(fuse_id, readpoint)
+
+    def _on_view_images_for(self, fuse_id, readpoint):
+        """查看指定 FuseID 和读点的图片"""
+        if not fuse_id or fuse_id == 'N/A':
+            return
         cb = self._cb.get('open_image_viewer')
         if cb:
             cb(fuse_id, readpoint)
@@ -882,16 +912,16 @@ class ChartViewer:
 
         # 表格列：测试项 | 读点 | FuseID | 时间戳 | 值
         columns = ('test_item', 'readpoint', 'fuse_id', 'timestamp', 'test_value')
-        column_widths = {'test_item': 180, 'readpoint': 80, 'fuse_id': 150, 'timestamp': 160, 'test_value': 120}
+        column_widths = {'test_item': 180, 'readpoint': 70, 'fuse_id': 200, 'timestamp': 160, 'test_value': 110}
 
         self._info_tree = ttk.Treeview(table_container, columns=columns, show='headings',
-                                       height=12, selectmode='browse')
+                                      height=12, selectmode='browse')
         
         self._info_tree.heading('test_item', text='测试项')
         self._info_tree.heading('readpoint', text='读点')
         self._info_tree.heading('fuse_id', text='FuseID')
         self._info_tree.heading('timestamp', text='时间戳')
-        self._info_tree.heading('test_value', text='测试值')
+        self._info_tree.heading('test_value', text='值')
         
         for col, width in column_widths.items():
             self._info_tree.column(col, width=width, anchor='center')
@@ -922,6 +952,10 @@ class ChartViewer:
         tk.Button(btn_frame, text='📷 查看抓图', command=self._on_view_images,
                  bg='#059669', fg='white', relief='flat', cursor='hand1',
                  font=('Microsoft YaHei', 10), padx=16, pady=6).pack(side='left')
+        
+        # 提示文字
+        tk.Label(btn_frame, text='（双击表格任意行可查看该行图像）',
+                bg='#f0f2f5', fg='#9ca3af', font=('Microsoft YaHei', 9)).pack(side='left', padx=12)
 
         self._update_dialog_info()
 
@@ -1016,6 +1050,8 @@ class ChartViewer:
         all_rows.sort(key=lambda x: (x['test_item'], int(re.search(r'\d+', str(x['readpoint'])).group()) if re.search(r'\d+', str(x['readpoint'])) else 0))
         
         # 插入表格，应用读点颜色（选中用红点符号标记）
+        # 保存行数据用于点击操作列
+        self._table_rows = {}
         selected_item_id = None
         for row in all_rows:
             rp_key = row['readpoint']
@@ -1035,6 +1071,13 @@ class ChartViewer:
             else:
                 item_id = self._info_tree.insert('', 'end', values=values)
             
+            # 保存行数据
+            self._table_rows[item_id] = {
+                'fuse_id': row['fuse_id'],
+                'readpoint': row['readpoint'],
+                'test_item': row['test_item']
+            }
+            
             if is_selected:
                 selected_item_id = item_id
         
@@ -1042,6 +1085,18 @@ class ChartViewer:
         if selected_item_id:
             self._info_tree.selection_set(selected_item_id)
             self._info_tree.see(selected_item_id)
+        
+        # 绑定双击行事件：查看图像
+        self._info_tree.bind('<Double-Button-1>', self._on_tree_double_click)
+
+    def _on_tree_double_click(self, event):
+        """处理表格双击事件：查看图像"""
+        region = self._info_tree.identify_region(event.x, event.y)
+        if region == 'cell':
+            item_id = self._info_tree.identify_row(event.y)
+            if item_id and item_id in self._table_rows:
+                row_data = self._table_rows[item_id]
+                self._on_view_images_for(row_data['fuse_id'], row_data['readpoint'])
 
     def _update_selection_panel(self):
         """更新框选详情面板 - 使用同一表格显示框选的数据"""

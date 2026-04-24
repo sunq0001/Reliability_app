@@ -491,7 +491,7 @@ class ChartInteractor:
             self.last_fuse_id = point.fuse_id
     
     def _handle_no_hover(self):
-        """处理在图表内但未悬停在点上的情况"""
+        """处理在图表内但未悬停在点上的情况 - 保留高亮不清除"""
         if self.set_cursor:
             self.set_cursor(False)
         
@@ -519,19 +519,11 @@ class ChartInteractor:
                 pass
             return
         
-        # 如果之前有悬停的点，保持显示其数据
-        if self.last_hover_point is not None:
-            if self.set_cursor:
-                self.set_cursor(False)
-            # 清除临时高亮
-            if self.current_highlight:
-                try:
-                    self.current_highlight.remove()
-                except Exception:
-                    pass
-                self.current_highlight = None
-            # 清除交叉线（临时）
-            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines]
+        # 不再自动清除高亮 - 保留最后悬停的高亮点
+        # 只清除临时交叉线，保持高亮点显示
+        if self.last_hover_point is not None and self.current_highlight:
+            # 只清除交叉线，保留高亮点
+            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines and l is not self.current_highlight]
             for line in lines_to_remove:
                 try:
                     line.remove()
@@ -545,18 +537,11 @@ class ChartInteractor:
                 pass
             return
         
-        # 如果之前没有悬停任何点，直接返回
-        if self.last_fuse_id is None:
-            return
-        
-        self.clear_all_highlights()
-        self.get_info_text('将鼠标移到图表数据点上查看详情', is_active=False)
-        self.set_linked('')
-        self.clear_shared_state()
-        self.last_fuse_id = None
+        # 如果之前没有任何悬停，直接返回
+        return
     
     def _handle_mouse_leave(self):
-        """处理鼠标离开图表区域的情况"""
+        """处理鼠标离开图表区域的情况 - 保留高亮不清除"""
         if self.set_cursor:
             self.set_cursor(False)
         
@@ -584,17 +569,10 @@ class ChartInteractor:
                 pass
             return
         
-        # 如果之前有悬停的点，保持显示其数据
-        if self.last_hover_point is not None:
-            # 清除临时高亮
-            if self.current_highlight:
-                try:
-                    self.current_highlight.remove()
-                except Exception:
-                    pass
-                self.current_highlight = None
-            # 清除交叉线（临时）
-            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines]
+        # 不再自动清除高亮 - 保留最后悬停的高亮点
+        # 只清除交叉线，保持高亮点显示
+        if self.last_hover_point is not None and self.current_highlight:
+            lines_to_remove = [l for l in self.drift_lines if l not in self.selection_lines and l is not self.current_highlight]
             for line in lines_to_remove:
                 try:
                     line.remove()
@@ -608,15 +586,8 @@ class ChartInteractor:
                 pass
             return
         
-        # 如果之前没有悬停任何点，直接返回
-        if self.last_fuse_id is None:
-            return
-        
-        self.clear_all_highlights()
-        self.get_info_text('将鼠标移到图表数据点上查看详情', is_active=False)
-        self.set_linked('')
-        self.clear_shared_state()
-        self.last_fuse_id = None
+        # 如果之前没有任何悬停，直接返回
+        return
     
     def highlight_linked(self, fuse_id):
         """
@@ -668,6 +639,108 @@ class ChartInteractor:
         
         self.canvas.draw_idle()
         return points
+
+    def highlight_by_timestamp(self, timestamp):
+        """
+        根据时间戳高亮点（搜索功能）
+        
+        返回: 匹配的点信息
+        """
+        self.clear_all_highlights()
+        
+        if timestamp is None:
+            return None
+        
+        # 在 fuse_cache 中查找匹配时间戳的点
+        matched_point = None
+        matched_fuse_id = None
+        
+        # 遍历所有 fuse_id 查找匹配时间戳的点
+        for fuse_id, rp_map in self.fuse_cache.items():
+            for _, row in rp_map.items():
+                time_col = 1 if 1 in row else ('Time' if 'Time' in row else None)
+                if time_col and time_col in row:
+                    ts = str(row[time_col])
+                    if ts == str(timestamp):
+                        # 找到匹配的点
+                        try:
+                            v = float(row[self.test_item])
+                        except (KeyError, ValueError, TypeError):
+                            continue
+                        
+                        # 计算 y 坐标
+                        label = str(row.name) if hasattr(row, 'name') else None
+                        if label is None:
+                            continue
+                        
+                        vy = self._calculate_cumulative_prob(label, v)
+                        if vy is None:
+                            continue
+                        
+                        matched_point = (fuse_id, label, v, vy)
+                        matched_fuse_id = fuse_id
+                        break
+            if matched_point:
+                break
+        
+        if matched_point is None:
+            return None
+        
+        fuse_id, label, v, vy = matched_point
+        
+        # 绘制高亮点
+        highlight = self.ax.plot(
+            v, vy, 'o',
+            color='#ff0000', markersize=10, markeredgecolor='white',
+            markeredgewidth=2, zorder=1000
+        )[0]
+        self.drift_lines.append(highlight)
+        
+        # 绘制该 FuseID 的其他读点（用虚线连接）
+        if fuse_id in self.fuse_cache:
+            rp_map = self.fuse_cache[fuse_id]
+            other_points = []
+            
+            for other_label, row in rp_map.items():
+                if other_label == label:
+                    continue
+                try:
+                    other_v = float(row[self.test_item])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                
+                other_vy = self._calculate_cumulative_prob(other_label, other_v)
+                if other_vy is None:
+                    continue
+                
+                other_points.append((other_v, other_vy))
+                
+                # 绘制其他点（橙色小点）
+                dot = self.ax.plot(
+                    other_v, other_vy, 'o',
+                    color='#e67e22', markersize=5, alpha=0.8
+                )[0]
+                self.drift_lines.append(dot)
+            
+            # 连接成虚线
+            for i in range(len(other_points)):
+                if i == 0:
+                    # 连接主高亮点到第一个其他点
+                    line = self.ax.plot(
+                        [v, other_points[0][0]], [vy, other_points[0][1]],
+                        '--', color='#e67e22', linewidth=1.0, alpha=0.6
+                    )[0]
+                    self.drift_lines.append(line)
+                if i < len(other_points) - 1:
+                    line = self.ax.plot(
+                        [other_points[i][0], other_points[i+1][0]],
+                        [other_points[i][1], other_points[i+1][1]],
+                        '--', color='#e67e22', linewidth=1.0, alpha=0.6
+                    )[0]
+                    self.drift_lines.append(line)
+        
+        self.canvas.draw_idle()
+        return matched_point
 
     # ========== 框选功能 ==========
     

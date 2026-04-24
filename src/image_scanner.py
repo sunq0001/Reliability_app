@@ -22,37 +22,62 @@ def parse_timestamp(filename):
     return m.group(1) if m else None
 
 
+def parse_scene_name(filename):
+    """
+    从文件名中提取场景名。
+    格式: 场景x_时间戳.ext，如 Mid1A1D_0_20260204012242.png
+    返回场景名字符串。
+    """
+    name = os.path.splitext(filename)[0]  # 去掉扩展名
+    # 移除时间戳部分（14位数字）
+    scene = TS_PATTERN.sub('', name)
+    # 清理可能的下划线
+    scene = scene.strip('_')
+    return scene if scene else '未知场景'
+
+
 def _find_images_in_dir(root_dir, recursive=False):
     """
     在一个目录（递归或不递归）下找所有图片。
-    返回 {时间戳: [图片绝对路径列表]}。
+    返回 {
+        时间戳: {
+            场景名: [图片绝对路径, ...],
+            ...
+        },
+        ...
+    }
     """
-    img_map = defaultdict(list)
+    img_map = defaultdict(lambda: defaultdict(list))
     exts = ['png', 'jpg', 'jpeg', 'bmp']
+
+    def process_file(path):
+        fname = os.path.basename(path)
+        ts = parse_timestamp(fname)
+        if ts:
+            scene = parse_scene_name(fname)
+            img_map[ts][scene].append(os.path.abspath(path))
 
     if recursive:
         for ext in exts:
             for path in glob.glob(os.path.join(root_dir, '**', f'*.{ext}'), recursive=True):
-                ts = parse_timestamp(os.path.basename(path))
-                if ts:
-                    img_map[ts].append(os.path.abspath(path))
+                process_file(path)
     else:
         for ext in exts:
             for path in glob.glob(os.path.join(root_dir, f'*.{ext}')):
-                ts = parse_timestamp(os.path.basename(path))
-                if ts:
-                    img_map[ts].append(os.path.abspath(path))
+                process_file(path)
         # 也检查一层子目录
         for sub in os.listdir(root_dir):
             sub_path = os.path.join(root_dir, sub)
             if os.path.isdir(sub_path):
                 for ext in exts:
                     for path in glob.glob(os.path.join(sub_path, f'*.{ext}')):
-                        ts = parse_timestamp(os.path.basename(path))
-                        if ts:
-                            img_map[ts].append(os.path.abspath(path))
+                        process_file(path)
 
-    return dict(img_map)
+    # 转换为普通 dict
+    result = {}
+    for ts, scenes in img_map.items():
+        result[ts] = {scene: list(paths) for scene, paths in scenes.items()}
+    return result
 
 
 def scan_image_root(root_dir):
@@ -67,12 +92,16 @@ def scan_image_root(root_dir):
     返回:
         dict: {
             'readpoints': {
-                '168H': {时间戳: [图片路径列表]},
+                '168H': {
+                    时间戳: {场景名: [图片路径列表]},
+                    ...
+                },
                 ...
             },
             'global_ts': {
-                时间戳: [图片绝对路径],   # 所有读点合并后的全局时间戳索引
+                时间戳: {场景名: [图片绝对路径]},
             },
+            'all_scenes': [场景名1, 场景名2, ...],  # 所有发现的场景名
             'stats': {
                 'total_images': int,
                 'readpoints_found': [str],
@@ -81,7 +110,8 @@ def scan_image_root(root_dir):
     """
     result = {
         'readpoints': {},
-        'global_ts': defaultdict(list),
+        'global_ts': defaultdict(lambda: defaultdict(list)),
+        'all_scenes': set(),
         'stats': {
             'total_images': 0,
             'readpoints_found': [],
@@ -112,22 +142,28 @@ def scan_image_root(root_dir):
             result['readpoints'][rp_name] = ts_map
             result['stats']['readpoints_found'].append(rp_name)
 
-        # 合并到全局索引
-        for ts, paths in ts_map.items():
-            result['global_ts'][ts].extend(paths)
+        # 合并到全局索引，收集场景名
+        for ts, scenes in ts_map.items():
+            for scene_name, paths in scenes.items():
+                result['all_scenes'].add(scene_name)
+                result['global_ts'][ts][scene_name].extend(paths)
 
     # 全局去重
     for ts in result['global_ts']:
-        seen = set()
-        unique = []
-        for p in result['global_ts'][ts]:
-            if p not in seen:
-                seen.add(p)
-                unique.append(p)
-        result['global_ts'][ts] = unique
+        for scene_name in result['global_ts'][ts]:
+            seen = set()
+            unique = []
+            for p in result['global_ts'][ts][scene_name]:
+                if p not in seen:
+                    seen.add(p)
+                    unique.append(p)
+            result['global_ts'][ts][scene_name] = unique
 
+    result['all_scenes'] = sorted(result['all_scenes'])
     result['stats']['total_images'] = sum(
-        len(v) for v in result['global_ts'].values()
+        len(paths) 
+        for scenes in result['global_ts'].values() 
+        for paths in scenes.values()
     )
 
     return result
@@ -192,31 +228,119 @@ def find_images_for_timestamp(scan_result, timestamp, readpoint=None):
         readpoint: 可选，限定在某个读点内查找
 
     返回:
-        list: 图片绝对路径列表，按类型排序（Dark, Dark2, Mid, TestPattern）
+        {
+            场景名: [图片绝对路径列表],
+            ...
+        }
     """
     if not timestamp:
-        return []
-
-    # 图片类型排序函数
-    def sort_key(path):
-        name = os.path.basename(path).lower()
-        if 'dark2' in name:
-            return 0
-        elif 'dark' in name and 'dark2' not in name:
-            return 1
-        elif 'mid' in name:
-            return 2
-        elif 'testpattern' in name:
-            return 3
-        return 4
+        return {}
 
     if readpoint and readpoint in scan_result.get('readpoints', {}):
-        ts_map = scan_result['readpoints'][readpoint]
-        paths = ts_map.get(timestamp, [])
+        return scan_result['readpoints'][readpoint].get(timestamp, {})
     else:
-        paths = scan_result.get('global_ts', {}).get(timestamp, [])
+        # 转换 global_ts 格式
+        raw = scan_result.get('global_ts', {}).get(timestamp, {})
+        if isinstance(raw, dict) and any(isinstance(v, list) for v in raw.values()):
+            return raw
+        elif isinstance(raw, list):
+            # 兼容旧格式：直接是路径列表
+            return {'全部': raw}
+        return {}
 
-    return sorted(paths, key=sort_key)
+
+def find_images_for_fuse(df, scan_result, fuse_id, readpoint=None):
+    """
+    根据 FuseID 从 DataFrame 找到对应行的时间戳，再查找图片。
+
+    参数:
+        df: DataFrame
+        scan_result: scan_image_root() 的返回值
+        fuse_id: FuseID 字符串
+        readpoint: 可选，限定读点
+
+    返回:
+        (timestamp_str, {场景名: [图片路径列表]})
+    """
+    if df is None or df.empty:
+        return None, {}
+
+    time_col = 1 if 1 in df.columns else ('Time' if 'Time' in df.columns else None)
+    fuse_col = 'FuseID' if 'FuseID' in df.columns else None
+
+    if time_col is None:
+        return None, {}
+
+    # 找匹配行
+    if fuse_col:
+        matched = df[df[fuse_col].astype(str).str.strip() == str(fuse_id).strip()]
+    else:
+        matched = df
+
+    if matched.empty:
+        return None, {}
+
+    # 取第一个匹配行的时间戳
+    ts = str(matched.iloc[0][time_col]).strip()
+    if not ts or ts == 'nan':
+        return None, {}
+
+    images = find_images_for_timestamp(scan_result, ts, readpoint)
+    return ts, images
+
+
+def scan_single_image_folder(folder_path):
+    """
+    扫描单个抓图目录（用于"分别加载"模式）。
+    
+    返回:
+        dict: 与 scan_image_root 相同格式的结构
+    """
+    result = {
+        'readpoints': {'_single_': {}},
+        'global_ts': defaultdict(lambda: defaultdict(list)),
+        'all_scenes': set(),
+        'stats': {
+            'total_images': 0,
+            'readpoints_found': [],
+        }
+    }
+    
+    if not os.path.isdir(folder_path):
+        return result
+    
+    # 扫描目录
+    ts_map = _find_images_in_dir(folder_path, recursive=True)
+    
+    if ts_map:
+        result['readpoints']['_single_'] = ts_map
+        result['stats']['readpoints_found'].append('_single_')
+        
+        # 合并到全局
+        for ts, scenes in ts_map.items():
+            for scene_name, paths in scenes.items():
+                result['all_scenes'].add(scene_name)
+                result['global_ts'][ts][scene_name].extend(paths)
+    
+    # 去重
+    for ts in result['global_ts']:
+        for scene_name in result['global_ts'][ts]:
+            seen = set()
+            unique = []
+            for p in result['global_ts'][ts][scene_name]:
+                if p not in seen:
+                    seen.add(p)
+                    unique.append(p)
+            result['global_ts'][ts][scene_name] = unique
+    
+    result['all_scenes'] = sorted(result['all_scenes'])
+    result['stats']['total_images'] = sum(
+        len(paths)
+        for scenes in result['global_ts'].values()
+        for paths in scenes.values()
+    )
+    
+    return result
 
 
 def find_images_for_fuse(df, scan_result, fuse_id, readpoint=None):
