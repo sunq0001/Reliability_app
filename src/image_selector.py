@@ -2,10 +2,13 @@
 image_selector.py - 图片选择弹窗模块
 以读点×场景的表格布局显示，点击文字查看原图。
 不生成缩略图，避免大量图片时卡顿。
+使用本地缓存加速网络图片访问。
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
+
+from src.image_cache import get_cache
 
 
 class ImageSelector:
@@ -19,6 +22,7 @@ class ImageSelector:
         self._current_ts = None
         self._all_readpoints = []
         self._all_scenes = []
+        self._cache = get_cache()  # 图片缓存
     
     def show(self, fuse_id, images_by_scene_and_readpoint, timestamp=None):
         """
@@ -99,13 +103,37 @@ class ImageSelector:
                               font=('Microsoft YaHei', 9), bg='#2c3e50', fg='#bdc3c7')
         info_label.pack(side='right', padx=15, pady=10)
         
+        # 缓存信息标签
+        cache_stats = self._cache.get_stats()
+        cache_text = f"缓存: {cache_stats['total_size_mb']}MB / {cache_stats['max_size_mb']}MB ({cache_stats['usage_percent']}%)"
+        self._cache_label = tk.Label(header, text=cache_text,
+                                     font=('Microsoft YaHei', 8), bg='#27ae60', fg='white',
+                                     padx=8, pady=2, cursor='hand1')
+        self._cache_label.pack(side='right', padx=(0, 10))
+        self._cache_label.bind('<Button-1>', lambda e: self._show_cache_info())
+        
         # 主内容区（可滚动）
         content = tk.Frame(win, bg='#ecf0f1')
         content.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # 创建表格
-        self._table_frame = tk.Frame(content, bg='#ecf0f1')
-        self._table_frame.pack(fill='both', expand=True)
+        # 创建滚动画布
+        self._canvas = tk.Canvas(content, bg='#ecf0f1', highlightthickness=0)
+        self._scrollbar = ttk.Scrollbar(content, orient='vertical', command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+        
+        self._scrollbar.pack(side='right', fill='y')
+        self._canvas.pack(side='left', fill='both', expand=True)
+        
+        # 表格放在可滚动框架内
+        self._table_frame = tk.Frame(self._canvas, bg='#ecf0f1')
+        self._canvas_window = self._canvas.create_window((0, 0), window=self._table_frame, anchor='nw')
+        
+        # 滚动绑定
+        self._table_frame.bind('<Configure>', self._on_frame_configure)
+        self._canvas.bind('<Configure>', self._on_canvas_configure)
+        
+        # 鼠标滚轮支持
+        self._canvas.bind('<MouseWheel>', lambda e: self._canvas.yview_scroll(int(-1*(e.delta/120)), 'units'))
         
         self._rebuild_content()
     
@@ -176,6 +204,19 @@ class ImageSelector:
                 else:
                     tk.Label(cell_frame, text="无数据", font=('Microsoft YaHei', 8),
                             bg='white', fg='#bdc3c7').pack(fill='both', expand=True)
+        
+        # 更新滚动区域
+        self._canvas.update_idletasks()
+        self._canvas.configure(scrollregion=self._canvas.bbox('all'))
+    
+    def _on_frame_configure(self, event):
+        """表格框架大小变化时更新滚动区域"""
+        self._canvas.configure(scrollregion=self._canvas.bbox('all'))
+    
+    def _on_canvas_configure(self, event):
+        """画布大小变化时调整表格框架宽度"""
+        if hasattr(self, '_canvas_window'):
+            self._canvas.itemconfig(self._canvas_window, width=event.width)
     
     def _show_images(self, paths, scene, readpoint):
         """显示该单元格对应的所有图片"""
@@ -240,7 +281,17 @@ class ImageSelector:
         scroll_frame.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
     
     def _show_fullscreen(self, path):
-        """使用系统默认图片查看器打开原图"""
+        """使用系统默认图片查看器打开原图（优先使用缓存）"""
+        # 先检查缓存
+        cached_path = self._cache.get(path)
+        if cached_path and os.path.exists(cached_path):
+            path = cached_path
+        elif os.path.exists(path):
+            # 缓存未命中，复制到缓存
+            cached_path = self._cache.add(path)
+            if cached_path:
+                path = cached_path
+        
         if not os.path.exists(path):
             messagebox.showerror("错误", f"图片文件不存在:\n{path}")
             return
@@ -262,6 +313,68 @@ class ImageSelector:
             # 备用：使用 PIL 显示
             self._show_with_pil(path)
     
+    def _show_cache_info(self):
+        """显示缓存详情弹窗"""
+        stats = self._cache.get_stats()
+        
+        win = tk.Toplevel(self._win)
+        win.title("图片缓存管理")
+        win.geometry("400x300")
+        win.configure(bg='#f5f5f5')
+        
+        # 标题
+        header = tk.Frame(win, bg='#2c3e50', height=40)
+        header.pack(fill='x')
+        header.pack_propagate(False)
+        tk.Label(header, text="图片缓存管理", font=('Microsoft YaHei', 11, 'bold'),
+                bg='#2c3e50', fg='white').pack(pady=8)
+        
+        # 内容区
+        content = tk.Frame(win, bg='white')
+        content.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # 统计信息
+        info_lines = [
+            ("缓存目录", stats['cache_dir']),
+            ("缓存文件数", f"{stats['total_files']} 个"),
+            ("已用空间", f"{stats['total_size_mb']} MB"),
+            ("空间上限", f"{stats['max_size_mb']} MB"),
+            ("使用率", f"{stats['usage_percent']}%"),
+            ("最旧文件", stats['oldest_access'] or "无"),
+        ]
+        
+        for i, (label, value) in enumerate(info_lines):
+            bg = '#f8f9fa' if i % 2 == 0 else 'white'
+            tk.Label(content, text=f"{label}:", font=('Microsoft YaHei', 9, 'bold'),
+                    bg=bg, anchor='w', pady=5).grid(row=i, column=0, sticky='w', padx=5)
+            tk.Label(content, text=str(value), font=('Microsoft YaHei', 9),
+                    bg=bg, anchor='w', pady=5).grid(row=i, column=1, sticky='w', padx=5)
+        
+        # 按钮区
+        btn_frame = tk.Frame(content, bg='white')
+        btn_frame.grid(row=len(info_lines), column=0, columnspan=2, pady=15)
+        
+        tk.Button(btn_frame, text="清理缓存", font=('Microsoft YaHei', 9),
+                 bg='#e74c3c', fg='white', relief='flat', cursor='hand1', padx=15,
+                 command=lambda: (self._cache.clear(), self._update_cache_label(), win.destroy(), self._show_cache_info())
+                 ).pack(side='left', padx=5)
+        
+        tk.Button(btn_frame, text="删除最旧10个", font=('Microsoft YaHei', 9),
+                 bg='#f39c12', fg='white', relief='flat', cursor='hand1', padx=15,
+                 command=lambda: (self._cache.remove_oldest(10), self._update_cache_label(), win.destroy(), self._show_cache_info())
+                 ).pack(side='left', padx=5)
+        
+        tk.Button(btn_frame, text="关闭", font=('Microsoft YaHei', 9),
+                 bg='#95a5a6', fg='white', relief='flat', cursor='hand1', padx=15,
+                 command=win.destroy).pack(side='left', padx=5)
+    
+    def _update_cache_label(self):
+        """更新缓存标签显示"""
+        if hasattr(self, '_cache_label') and self._cache_label.winfo_exists():
+            stats = self._cache.get_stats()
+            cache_text = f"缓存: {stats['total_size_mb']}MB / {stats['max_size_mb']}MB ({stats['usage_percent']}%)"
+            self._cache_label.config(text=cache_text)
+    
     @staticmethod
     def _format_ts(ts):
         """14位时间戳转友好格式"""
@@ -278,7 +391,7 @@ class ImageSelector:
 
     def _show_with_pil(self, path):
         """备用：用 PIL + tkinter 显示图片（带缩放）"""
-        from PIL import Image, ImageTk, ImageTk_tk
+        from PIL import Image, ImageTk
         
         win = tk.Toplevel(self._win)
         win.title(os.path.basename(path))
