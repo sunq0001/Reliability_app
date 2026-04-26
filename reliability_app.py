@@ -93,6 +93,7 @@ class ReliabilityAnalysisApp:
         self._test_item_selector = None
         self._selected_test_items = set()
         self._all_test_items = []
+        self._constant_test_items = {}  # 全相同项: {名称: 值}
 
         # ---- 抓图扫描结果（供 ImageViewer 使用）----
         self._image_scan_result = None
@@ -192,6 +193,7 @@ class ReliabilityAnalysisApp:
             parent=self.root,
             all_items=self._all_test_items,
             selected_items=self._selected_test_items,
+            constant_items=self._constant_test_items,
             count_var=self.test_item_count_var,
             log_fn=lambda msg: self.log(msg),
         )
@@ -1083,14 +1085,16 @@ class ReliabilityAnalysisApp:
         # ② 扫描测试项
         if not hasattr(self, '_all_test_items') or not self._all_test_items:
             log("[步骤0] 自动扫描测试项...", 'info')
-            test_items = _scan_items(self._current_df, log_callback=log)
-            if test_items:
+            result = _scan_items(self._current_df, log_callback=log)
+            if result:
+                test_items, constant_items = result
                 self._all_test_items = test_items
+                self._constant_test_items = constant_items
                 self._filtered_test_items = test_items
-                log(f"[扫描] 发现 {len(test_items)} 个可分析测试项", 'success')
-                # 通知选择器同步数据（跨线程安全：走主线程）
-                self.root.after(0, lambda items=test_items: (
-                    self._test_item_selector.update_items(items) if self._test_item_selector else None
+                log(f"[扫描] 发现 {len(test_items)} 个可分析测试项 + {len(constant_items)} 个全相同项", 'success')
+                # 通知选择器同步数据
+                self.root.after(0, lambda: (
+                    self._test_item_selector.update_items(test_items, constant_items) if self._test_item_selector else None
                 ))
 
         # ③ 执行漂移分析
@@ -1229,20 +1233,21 @@ class ReliabilityAnalysisApp:
             messagebox.showwarning("提示", "未能加载数据，请检查文件路径")
             return
 
-        test_items = get_available_test_items(df, log_callback=self.log)
-        if test_items:
+        result = get_available_test_items(df, log_callback=self.log)
+        if result:
+            test_items, constant_items = result
             self._all_test_items = test_items
+            self._constant_test_items = constant_items
             self._filtered_test_items = test_items
             self._current_df = df
 
-            # 通知选择器同步新数据（修复：初始化时传入的是空列表引用）
+            # 通知选择器同步新数据
             if self._test_item_selector is not None:
-                self._test_item_selector.update_items(test_items)
+                self._test_item_selector.update_items(test_items, constant_items)
 
-            self.log(f"[扫描] 发现 {len(test_items)} 个可分析测试项", 'success')
-            if test_items:
-                self.log(f"[示例] 前5项: {test_items[:5]}", 'info')
-            self.test_item_count_var.set(f"点击选择测试项（共{len(test_items)}项）")
+            total = len(test_items) + len(constant_items)
+            self.log(f"[扫描] 发现 {len(test_items)} 个可分析测试项 + {len(constant_items)} 个全相同项", 'success')
+            self.test_item_count_var.set(f"点击选择测试项（共{total}项）")
         else:
             messagebox.showwarning("提示", "未找到可分析的测试项")
 

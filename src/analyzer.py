@@ -12,62 +12,63 @@ import pandas as pd
 
 def get_available_test_items(df, log_callback=None):
     """
-    获取可用于分析的测试项列表（过滤掉无效测试项）
-    向量化版本：一次性处理所有列，比逐列 Python 循环快 10~50x
-
-    参数:
-        df: DataFrame
-        log_callback: callable(message, level)
-
+    获取可用于分析的测试项列表
+    
     返回:
-        list: 有效测试项列名列表
+        tuple: (有效测试项列表, 全相同项字典)
+            - 有效测试项: nunique > 1 的列名列表
+            - 全相同项: {测试项名称: 唯一值}，如 {"Test_A": 1, "Test_B": -1}
     """
     def log(msg, level='info'):
         if log_callback:
             log_callback(msg, level)
 
-    # 排除非数值列（用 set 加快查找）
+    # 排除非数值列
     exclude_cols = {
         'SN', 'Time', 'PGM', 'LotID', 'WaferID', 'OPID', 'StationID',
         'FuseID', 'OTP_X', 'OTP_Y', 'ChromaBin', 'Bin', 'HWBin', 'SWBin',
         'HWVersion', 'TestTime', 'PowerUp_Result', 'I2CTest_Result'
     }
 
-    # 候选列：排除已知非数值列
     candidate_cols = [c for c in df.columns if c not in exclude_cols]
 
-    # 批量转数值，一次操作整个子 DataFrame
+    # 批量转数值
     numeric_df = df[candidate_cols].apply(pd.to_numeric, errors='coerce')
 
-    # 批量统计：每列非空数量 & 唯一值个数
-    non_null_counts = numeric_df.count()          # 非空行数
-    nunique_counts  = numeric_df.nunique(dropna=True)  # 唯一值个数（不含 NaN）
+    # 批量统计
+    non_null_counts = numeric_df.count()
+    nunique_counts  = numeric_df.nunique(dropna=True)
 
     # 有效：非空 + 唯一值 > 1
     valid_mask   = (non_null_counts > 0) & (nunique_counts > 1)
-    invalid_mask = ~valid_mask
+    constant_mask = (non_null_counts > 0) & (nunique_counts == 1)
 
     valid_test_items = list(numeric_df.columns[valid_mask])
-    invalid_cols     = numeric_df.columns[invalid_mask]
+    constant_cols    = numeric_df.columns[constant_mask]
 
-    # 统计无效类型
-    invalid_items = []
-    for c in invalid_cols:
-        if non_null_counts[c] == 0:
-            reason = '空数据'
+    # 获取全相同项的值（保留原始类型）
+    constant_items = {}
+    for c in constant_cols:
+        unique_val = numeric_df[c].dropna().iloc[0]  # 取第一个非空值作为唯一值
+        if pd.notna(unique_val):
+            constant_items[c] = unique_val
         else:
-            reason = f'单一值'
-        invalid_items.append((c, reason))
+            constant_items[c] = 0
 
-    if invalid_items:
-        log(f"[过滤] 跳过 {len(invalid_items)} 个无效测试项", 'info')
-        for col, reason in invalid_items[:10]:
-            log(f"  - {col}: {reason}", 'info')
-        if len(invalid_items) > 10:
-            log(f"  ... 还有 {len(invalid_items) - 10} 个", 'info')
+    # 统计（按值分组）
+    if len(constant_cols) > 0:
+        val_counts = {}
+        for v in constant_items.values():
+            # 用字符串做key，保留原始精度
+            key = f"{v:.4g}" if isinstance(v, float) else str(v)
+            val_counts[key] = val_counts.get(key, 0) + 1
+        log(f"[过滤] 跳过 {len(constant_cols)} 个全相同项", 'info')
+        for val_str, count in sorted(val_counts.items()):
+            log(f"  - 值={val_str}: {count} 项", 'info')
 
-    log(f"[有效] 共 {len(valid_test_items)} 个测试项可用于分析", 'success')
-    return valid_test_items
+    log(f"[有效] 共 {len(valid_test_items)} 个测试项 + {len(constant_items)} 个全相同项", 'success')
+    
+    return valid_test_items, constant_items
 
 
 # ========== 漂移分析（向量化）==========
